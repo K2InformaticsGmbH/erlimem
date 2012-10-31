@@ -1,0 +1,2 @@
+-define(IMEM_TIMEOUT, 1000).
+-define(SESSION_TIMEOUT, 3600000).

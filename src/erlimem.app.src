@@ -1,0 +1,14 @@
+{application, erlimem,
+ [
+  {description, "An Erlang IMEM DB client driver"},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { erlimem_app, []}},
+  {env, [
+         {start_monitor, false}
+        ]}
+ ]}.
