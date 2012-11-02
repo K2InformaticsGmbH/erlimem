@@ -11,7 +11,7 @@
     pool,
     session_id,
     statements = [],
-    socket = undefined,
+    connection = {type, handle},
     conn_param,
     idle_timer
 }).
@@ -91,24 +91,30 @@ call(Pid, Msg) ->
 
 init([Type, Opts]) ->
     case connect(Type, Opts) of
-        {ok, Socket} ->
+        {ok, Connect} ->
             io:format(user, "started ~p ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
             Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {ok, #state{socket=Socket, conn_param={Type, Opts}, idle_timer = Timer}};
+            {ok, #state{connection=Connect, conn_param={Type, Opts}, idle_timer = Timer}};
         {error, Reason} -> {stop, Reason}
     end.
 
-connect(connect_tcp, {IpAddr, Port}) ->
+connect(tcp, {IpAddr, Port, Schema}) ->
     {ok, Ip} = inet:getaddr(IpAddr, inet),
     {ok, Socket} = gen_tcp:connect(Ip, Port, []),
     inet:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
-    {ok, Socket}.
+    {ok, {tcp, Socket}, Schema};
+connect(rpc, {Node, Schema}) when Node == node() ->
+    connect(connect_local, {Schema});
+connect(connect_rpc, {Node, Schema}) ->
+    {ok, {rpc, Node}, Schema};
+connect(connect_local, {Schema}) ->
+    {ok, {local, undefined}, Schema}.
 
-handle_call(Msg, _From, #state{socket=Socket,idle_timer=Timer} = State) ->
+handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer} = State) ->
     erlang:cancel_timer(Timer),
-    Nodes = erlimem_cmds:exec(Msg, Socket),
+    Nodes = erlimem_cmds:exec(Msg, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Nodes,State#state{socket=Socket,idle_timer=NewTimer}}.
+    {reply,Nodes,State#state{idle_timer=NewTimer}}.
 
 handle_cast(stop, State) ->
     {stop,normal,State};

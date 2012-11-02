@@ -2,9 +2,15 @@
 
 -export([exec/2]).
 
-exec(Cmd, Socket) ->
+exec(Cmd, {tcp, Socket}) ->
     gen_tcp:send(Socket, term_to_binary(Cmd)),
-    recv_term(Socket, <<>>).
+    recv_term(Socket, <<>>);
+exec(CmdTuple, {rpc, Node}) ->
+    [Cmd, Args] = lists:split(1, tuple_to_list(CmdTuple)),
+    rpc:call(Node, imem_if, Cmd, Args);
+exec(CmdTuple, {local, _}) ->
+    [Cmd, Args] = lists:split(1, tuple_to_list(CmdTuple)),
+    apply(imem_if, Cmd, Args).
 
 recv_term(Sock, Bin) ->
     {ok, Pkt} = gen_tcp:recv(Sock, 0),
