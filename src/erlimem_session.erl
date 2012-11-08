@@ -13,47 +13,17 @@
     statements = [],
     connection = {type, handle},
     conn_param,
-    idle_timer
+    idle_timer,
+    schema
 }).
 
-%%-record(statement, {
-%%    ref,
-%%    handle,
-%%    max_rows,
-%%    row_top = 0,
-%%    row_bottom = 0,
-%%    columns,
-%%    results,
-%%    use_cache = false,
-%%    port_row_fetch_status = more,
-%%    fetch_activity
-%%}).
-
 %% API
--export([%execute_sql/4,
-         %execute_sql/5,
-         %next_rows/1,
-         %prev_rows/1,
-         %rows_from/2,
-         %get_buffer_max/1,
-         %close/1,
-         %get_columns/1,
-         open/2
+-export([open/2
         , close/1
-        , imem_nodes/1
-        , tables/1
-		, columns/2
-        , read/3
-        , write/3
-        , delete/3
-        , add_attribute/3
-		, delete_table/2
-        , update_opts/3
-        , read_all_rows/2
-		, build_table/3
-        , select_rows/3
-        , insert_into_table/3
-        , build_table/4
+        , exec/4
+        , exec/5
+        , read_block/3
+        , run_cmd/3
 		]).
 
 %% gen_server callbacks
@@ -70,31 +40,22 @@ open(Type, Opts) ->
     {ok, Pid} = gen_server:start(?MODULE, [Type, Opts], []),
     {?MODULE, Pid}.
 
-close(                                  {?MODULE, Pid}) -> gen_server:cast(Pid, stop).
-imem_nodes(                             {?MODULE, Pid}) -> call(Pid, {imem_nodes}).
-tables(                                 {?MODULE, Pid}) -> call(Pid, {tables}).
-columns(TableName,                      {?MODULE, Pid}) -> call(Pid, {columns, TableName}).
-read(TableName, Key,                    {?MODULE, Pid}) -> call(Pid, {read, TableName, Key}).
-write(TableName, Row,                   {?MODULE, Pid}) -> call(Pid, {write, TableName, Row}).
-delete(TableName, Key,                  {?MODULE, Pid}) -> call(Pid, {delete, TableName, Key}).
-add_attribute(A, Opts,                  {?MODULE, Pid}) -> call(Pid, {add_attribute, A, Opts}).
-delete_table(TableName,                 {?MODULE, Pid}) -> call(Pid, {delete_table, TableName}).
-update_opts(Tuple, Opts,                {?MODULE, Pid}) -> call(Pid, {update_opts, Tuple, Opts}).
-read_all_rows(TableName,                {?MODULE, Pid}) -> call(Pid, {read_all_rows, TableName}).
-build_table(TableName, Columns,         {?MODULE, Pid}) -> call(Pid, {build_table, TableName, Columns}).
-select_rows(TableName, MatchSpec,       {?MODULE, Pid}) -> call(Pid, {select_rows, TableName, MatchSpec}).
-insert_into_table(TableName, Row,       {?MODULE, Pid}) -> call(Pid, {insert_into_table, TableName, Row}).
-build_table(TableName, Columns, Opts,   {?MODULE, Pid}) -> call(Pid, {build_table, TableName, Columns, Opts}).
+close({?MODULE, Pid}) -> gen_server:cast(Pid, stop).
+
+exec(SeCo, StmtStr, Schema,              Ctx) -> exec(SeCo, StmtStr, 0, Schema, Ctx).
+exec(SeCo, StmtStr, BufferSize, Schema,  Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize, Schema], Ctx).
+read_block(SeCo, StmtRef,                {?MODULE, Pid}) -> run_cmd(read_block, [SeCo, StmtRef], {?MODULE, Pid}).
+run_cmd(Cmd, Args,    {?MODULE, Pid}) when is_list(Args) -> call(Pid, list_to_tuple([Cmd|Args])).
 
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
 
 init([Type, Opts]) ->
     case connect(Type, Opts) of
-        {ok, Connect} ->
+        {ok, Connect, Schema} ->
             io:format(user, "started ~p ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
             Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {ok, #state{connection=Connect, conn_param={Type, Opts}, idle_timer = Timer}};
+            {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer}};
         {error, Reason} -> {stop, Reason}
     end.
 
@@ -138,16 +99,36 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 tcp_test() ->
     erlimem:start(),
-    Sess = erlimem_session:open(connect_tcp, {localhost, 8124}),
-    Nodes = Sess:imem_nodes(),
-    Sess:close(),
-    ?assertEqual(length(Nodes), 4).
+    Sess = erlimem_session:open(tcp, {localhost, 8124, "Mnesia"}),
+%%    Nodes = Sess:imem_nodes(),
+    Sess:close().
+%    ?assertEqual(length(Nodes), 4).
 
 tcp_table_test() ->
     erlimem:start(),
-    Sess = erlimem_session:open(connect_tcp, {localhost, 8124}),
-    Nodes = Sess:imem_nodes(),
-    io:format(user, "Nodes ~p~n", [Nodes]),
-    Sess:close(),
-    ?assertEqual(length(Nodes), 4).
+    Schema = "Mnesia",
+    SeCo = {},
+    Sess = erlimem_session:open(tcp, {localhost, 8124, Schema}),
+    Res = Sess:exec(SeCo, "create table def (col1 int, col2 char);", Schema),
+    io:format(user, "Create ~p~n", [Res]),
+    Res0 = insert_range(SeCo, Sess, 24, "def", Schema),
+    io:format(user, "insert ~p~n", [Res0]),
+    {ok, Clms, Ref} = Sess:exec(SeCo, "select * from def;", 10, Schema),
+    io:format(user, "select ~p~n", [{Clms, Ref}]),
+    read_all_blocks(SeCo, Sess, Ref),
+    ok = Sess:exec(SeCo, "drop table def;", Schema),
+    io:format(user, "drop table~n", []),
+    Sess:close().
 
+insert_range(_SeCo, _Sess, 0, _TableName, _Schema) -> ok;
+insert_range(SeCo, Sess, N, TableName, Schema) when is_integer(N), N > 0 ->
+    Sess:exec(SeCo, "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');", Schema),
+    insert_range(SeCo, Sess, N-1, TableName, Schema).
+
+read_all_blocks(SeCo, Sess, Ref) ->
+    {ok, Rows} = Sess:read_block(SeCo, Ref),
+    io:format(user, "read_block ~p~n", [Rows]),
+    case Rows of
+        [] -> ok;
+        _ -> read_all_blocks(SeCo, Sess, Ref)
+    end.
