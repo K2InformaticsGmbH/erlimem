@@ -42,10 +42,10 @@ open(Type, Opts) ->
 
 close({?MODULE, Pid}) -> gen_server:cast(Pid, stop).
 
-exec(SeCo, StmtStr, Schema,              Ctx) -> exec(SeCo, StmtStr, 0, Schema, Ctx).
-exec(SeCo, StmtStr, BufferSize, Schema,  Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize, Schema], Ctx).
-read_block(SeCo, StmtRef,                {?MODULE, Pid}) -> run_cmd(read_block, [SeCo, StmtRef], {?MODULE, Pid}).
-run_cmd(Cmd, Args,    {?MODULE, Pid}) when is_list(Args) -> call(Pid, list_to_tuple([Cmd|Args])).
+exec(SeCo, StmtStr, Schema,                      Ctx) -> exec(SeCo, StmtStr, 0, Schema, Ctx).
+exec(SeCo, StmtStr, BufferSize, Schema,          Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize, Schema], Ctx).
+read_block(SeCo, StmtRef,                        Ctx) -> run_cmd(read_block, [SeCo, StmtRef], Ctx).
+run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, list_to_tuple([Cmd|Args])).
 
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
@@ -111,9 +111,9 @@ tcp_table_test() ->
     Sess = erlimem_session:open(tcp, {localhost, 8124, Schema}),
     Res = Sess:exec(SeCo, "create table def (col1 int, col2 char);", Schema),
     io:format(user, "Create ~p~n", [Res]),
-    Res0 = insert_range(SeCo, Sess, 24, "def", Schema),
+    Res0 = insert_range(SeCo, Sess, 200, "def", Schema),
     io:format(user, "insert ~p~n", [Res0]),
-    {ok, Clms, Ref} = Sess:exec(SeCo, "select * from def;", 10, Schema),
+    {ok, Clms, Ref} = Sess:exec(SeCo, "select * from def;", 100, Schema),
     io:format(user, "select ~p~n", [{Clms, Ref}]),
     read_all_blocks(SeCo, Sess, Ref),
     ok = Sess:exec(SeCo, "drop table def;", Schema),
@@ -127,7 +127,7 @@ insert_range(SeCo, Sess, N, TableName, Schema) when is_integer(N), N > 0 ->
 
 read_all_blocks(SeCo, Sess, Ref) ->
     {ok, Rows} = Sess:read_block(SeCo, Ref),
-    io:format(user, "read_block ~p~n", [Rows]),
+    io:format(user, "read_block ~p~n", [length(Rows)]),
     case Rows of
         [] -> ok;
         _ -> read_all_blocks(SeCo, Sess, Ref)

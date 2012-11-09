@@ -16,8 +16,8 @@ recv_term(Sock, Bin) ->
     {ok, Pkt} = gen_tcp:recv(Sock, 0),
     NewBin = << Bin/binary, Pkt/binary >>,
     case (catch binary_to_term(NewBin)) of
-        {'EXIT', Reason} ->
-            io:format(user, "term incomplete (~p), received ~p bytes~n", [Reason, byte_size(Pkt)]),
+        {'EXIT', _Reason} ->
+            io:format(user, "term incomplete, received ~p bytes waiting...~n", [byte_size(Pkt)]),
             recv_term(Sock, NewBin);
         Data -> Data
     end.
