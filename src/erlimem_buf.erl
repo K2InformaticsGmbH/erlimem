@@ -1,4 +1,4 @@
--module(buffer_mgr).
+-module(erlimem_buf).
 
 -record(buffer,
     { row_top = 0
