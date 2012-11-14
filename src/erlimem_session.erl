@@ -85,7 +85,7 @@ handle_call(stop, _From, #state{statements=Stmts}=State) ->
     {stop,normal,State};
 handle_call({close_statement, StmtRef}, _From, #state{statements=Stmts}=State) ->
     case lists:keytake(StmtRef, 1, Stmts) of
-        {value, #statement{buf=Buf}, NewStmts} -> erlimem_buf:delete_buffer(Buf);
+        {value, {StmtRef, #statement{buf=Buf}}, NewStmts} -> erlimem_buf:delete_buffer(Buf);
         false                                  -> NewStmts = Stmts
     end,
     {reply,ok,State#state{statements=NewStmts}};
@@ -148,9 +148,9 @@ setup() ->
     erlimem:start(),
     erlimem_session:open(tcp, {localhost, 8124, "Mnesia"}).
 
-teardown(Sess) -> 
-    Sess:close(),
-    erlimem:stop().
+teardown(Sess) ->
+   % Sess:close(),
+   erlimem:stop().
 
 db_test_() ->
     {timeout, 1000000, {
@@ -173,13 +173,14 @@ tcp_table_test(Sess) ->
     {ok, Clms, Statement} = Sess:exec(SeCo, "select * from def;", 100, Schema),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(SeCo),
+    timer:sleep(1000),
     io:format(user, "receiving...~n", []),
-    timer:sleep(100000),
-    Rows = Statement:get_next(100, [{},{},{}]),
+    Rows = Statement:get_next(100, [{},{}]),
     io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec(SeCo, "drop table def;", Schema),
     Statement:close(),
-    io:format(user, "drop table~n", []).
+    io:format(user, "drop table~n", []),
+    Statement:close().
 
 insert_range(_SeCo, _Sess, 0, _TableName, _Schema) -> ok;
 insert_range(SeCo, Sess, N, TableName, Schema) when is_integer(N), N > 0 ->
