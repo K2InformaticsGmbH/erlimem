@@ -3,8 +3,6 @@
 
 -include("erlimem.hrl").
 
--include_lib("eunit/include/eunit.hrl").
-
 -record(state, {
     status=closed,
     port,
@@ -17,6 +15,12 @@
     schema
 }).
 
+-record(statement, {
+        buf,
+        ref,
+        result
+    }).
+
 %% API
 -export([open/2
         , close/1
@@ -24,6 +28,8 @@
         , exec/5
         , read_block/3
         , run_cmd/3
+        , start_async_read/2
+        , get_next/3
 		]).
 
 %% gen_server callbacks
@@ -40,12 +46,15 @@ open(Type, Opts) ->
     {ok, Pid} = gen_server:start(?MODULE, [Type, Opts], []),
     {?MODULE, Pid}.
 
-close({?MODULE, Pid}) -> gen_server:cast(Pid, stop).
+close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
+close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
 exec(SeCo, StmtStr, Schema,                      Ctx) -> exec(SeCo, StmtStr, 0, Schema, Ctx).
 exec(SeCo, StmtStr, BufferSize, Schema,          Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize, Schema], Ctx).
 read_block(SeCo, StmtRef,                        Ctx) -> run_cmd(read_block, [SeCo, StmtRef], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, list_to_tuple([Cmd|Args])).
+start_async_read(SeCo,       {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, SeCo, StmtRef}).
+get_next(Count, Cols,        {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_next, StmtRef, Count, Cols}).
 
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
@@ -71,14 +80,50 @@ connect(connect_rpc, {Node, Schema}) ->
 connect(connect_local, {Schema}) ->
     {ok, {local, undefined}, Schema}.
 
-handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer} = State) ->
-    erlang:cancel_timer(Timer),
-    Nodes = erlimem_cmds:exec(Msg, Connection),
-    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Nodes,State#state{idle_timer=NewTimer}}.
-
-handle_cast(stop, State) ->
+handle_call(stop, _From, #state{statements=Stmts}=State) ->
+    _ = [erlimem_buf:delete_buffer(Buf) || #statement{buf=Buf} <- Stmts],
     {stop,normal,State};
+handle_call({close_statement, StmtRef}, _From, #state{statements=Stmts}=State) ->
+    case lists:keytake(StmtRef, 1, Stmts) of
+        {value, #statement{buf=Buf}, NewStmts} -> erlimem_buf:delete_buffer(Buf);
+        false                                  -> NewStmts = Stmts
+    end,
+    {reply,ok,State#state{statements=NewStmts}};
+handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, Count, Cols),
+    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
+handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    NewState = case erlimem_cmds:exec(Msg, Connection) of
+        {ok, Clms, Ref} ->
+            Result = {ok, Clms, {?MODULE, Ref, self()}},
+            State#state{statements=lists:keystore(Ref, 1, Stmts,
+                            {Ref, #statement{ result={columns, Clms}
+                                            , ref=Ref
+                                            , buf=erlimem_buf:create_buffer()}
+                            })
+                       };
+        Res ->
+            Result = Res,
+            State
+    end,
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Result,NewState#state{idle_timer=NewTimer}}.
+
+handle_cast({read_block_async, SeCo, StmtRef}, #state{connection=Connection,statements=Stmts}=State) ->    
+    {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
+    case erlimem_cmds:exec({read_block, SeCo, StmtRef}, Connection) of
+        {ok, []} -> {noreply, State};
+        {ok, Rows} ->
+            erlimem_buf:insert_rows(Buffer, Rows),
+            gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
+            {noreply, State}
+    end;
 handle_cast(_Request, State) ->
     {noreply, State}.
 
@@ -97,38 +142,54 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 % EUnit tests --
 
-tcp_test() ->
-    erlimem:start(),
-    Sess = erlimem_session:open(tcp, {localhost, 8124, "Mnesia"}),
-%%    Nodes = Sess:imem_nodes(),
-    Sess:close().
-%    ?assertEqual(length(Nodes), 4).
+-include_lib("eunit/include/eunit.hrl").
 
-tcp_table_test() ->
+setup() -> 
     erlimem:start(),
+    erlimem_session:open(tcp, {localhost, 8124, "Mnesia"}).
+
+teardown(Sess) -> 
+    Sess:close(),
+    erlimem:stop().
+
+db_test_() ->
+    {timeout, 1000000, {
+        setup,
+        fun setup/0,
+        fun teardown/1,
+        {with, [
+            fun tcp_table_test/1
+        ]}
+        }
+    }.
+
+tcp_table_test(Sess) ->
     Schema = "Mnesia",
     SeCo = {},
-    Sess = erlimem_session:open(tcp, {localhost, 8124, Schema}),
     Res = Sess:exec(SeCo, "create table def (col1 int, col2 char);", Schema),
     io:format(user, "Create ~p~n", [Res]),
-    Res0 = insert_range(SeCo, Sess, 200, "def", Schema),
+    Res0 = insert_range(SeCo, Sess, 210, "def", Schema),
     io:format(user, "insert ~p~n", [Res0]),
-    {ok, Clms, Ref} = Sess:exec(SeCo, "select * from def;", 100, Schema),
-    io:format(user, "select ~p~n", [{Clms, Ref}]),
-    read_all_blocks(SeCo, Sess, Ref),
+    {ok, Clms, Statement} = Sess:exec(SeCo, "select * from def;", 100, Schema),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
+    Statement:start_async_read(SeCo),
+    io:format(user, "receiving...~n", []),
+    timer:sleep(100000),
+    Rows = Statement:get_next(100, [{},{},{}]),
+    io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec(SeCo, "drop table def;", Schema),
-    io:format(user, "drop table~n", []),
-    Sess:close().
+    Statement:close(),
+    io:format(user, "drop table~n", []).
 
 insert_range(_SeCo, _Sess, 0, _TableName, _Schema) -> ok;
 insert_range(SeCo, Sess, N, TableName, Schema) when is_integer(N), N > 0 ->
     Sess:exec(SeCo, "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');", Schema),
     insert_range(SeCo, Sess, N-1, TableName, Schema).
 
-read_all_blocks(SeCo, Sess, Ref) ->
-    {ok, Rows} = Sess:read_block(SeCo, Ref),
-    io:format(user, "read_block ~p~n", [length(Rows)]),
-    case Rows of
-        [] -> ok;
-        _ -> read_all_blocks(SeCo, Sess, Ref)
-    end.
+%% - read_all_blocks(SeCo, Sess, Ref) ->
+%% -     {ok, Rows} = Sess:read_block(SeCo, Ref),
+%% -     io:format(user, "read_block ~p~n", [length(Rows)]),
+%% -     case Rows of
+%% -         [] -> ok;
+%% -         _ -> read_all_blocks(SeCo, Sess, Ref)
+%% -     end.

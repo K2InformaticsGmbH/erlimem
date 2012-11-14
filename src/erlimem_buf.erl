@@ -7,6 +7,7 @@
     }).
 
 -export([create_buffer/0
+        , delete_buffer/1
         , get_rows_from_ets/3
         , insert_rows/2
         , get_prev_rows/3
@@ -17,11 +18,8 @@
 create_buffer() ->
     #buffer{tableid=ets:new(results, [ordered_set, public])}.
 
-get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd} = Buffer, TableId, Columns) ->
-    Keys = lists:seq(RowStart, RowEnd),
-    Rows = [ets:lookup(TableId, K1)||K1<-Keys],
-    {[[integer_to_list(I)|format_row(Columns,R)]
-     || [{I,R}|_] <-Rows], Buffer}.
+delete_buffer(#buffer{tableid=Tab}) ->
+    true = ets:delete(Tab).
 
 format_row(Cols,Rows) -> format_row(Cols,Rows,[]).
 format_row([],[], Acc) -> Acc;
@@ -37,38 +35,106 @@ insert_rows(#buffer{tableid=Results}, Rows) ->
     CacheSize = ets:info(Results, size),
     ets:insert(Results, [{I, R}||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), lists:reverse(Rows))]).
 
-get_prev_rows(#buffer{row_top=RowTop, tableid=TableId} = Buffer, MaxRows, Columns) ->
-    CacheSize = ets:info(TableId, size),
-    NewRowTop =
-        if (RowTop - MaxRows - 1) < 1 -> 1;
-           true -> (RowTop - MaxRows - 1)
-        end,
-    NewRowBottom =
-        if (NewRowTop + MaxRows) > CacheSize -> CacheSize;
-           true -> (NewRowTop + MaxRows)
-        end,
-    get_rows_from_ets(Buffer#buffer{row_top=NewRowTop,row_bottom=NewRowBottom}, TableId, Columns).
+get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd}, TableId, Columns) ->
+    Keys = lists:seq(RowStart, RowEnd),
+    Rows = [ets:lookup(TableId, K1)||K1<-Keys],
+    [[integer_to_list(I)|format_row(Columns,R)] || [{I,R}|_] <-Rows].
 
-get_rows_from(#buffer{tableid=TableId} = Buffer, RowNum, MaxRows, Columns) ->
+get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows, Columns) ->
     CacheSize = ets:info(TableId, size),
-    NewRowBottom =
-        if (RowNum > CacheSize) or (RowNum + MaxRows > CacheSize) -> CacheSize;
-           true -> RowNum + MaxRows
-        end,
     NewRowTop =
-        if (NewRowBottom - MaxRows) < 1 -> 1;
-           true -> (NewRowBottom - MaxRows)
+        if RowNum > CacheSize -> CacheSize;
+           true -> RowNum
         end,
-    get_rows_from_ets(Buffer#buffer{row_top=NewRowTop,row_bottom=NewRowBottom}, TableId, Columns).
+    NewRowBottom =
+        if (NewRowTop + MaxRows - 1) > CacheSize -> CacheSize;
+           true -> (NewRowTop + MaxRows - 1)
+        end,
+    NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
+    {get_rows_from_ets(NewBuf, TableId, Columns), NewBuf}.
 
-get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buffer, MaxRows, Columns) ->
+get_prev_rows(#buffer{row_top=RowTop, tableid=TableId} = Buf, MaxRows, Columns) ->
+    NewRowTop =
+        if (RowTop - MaxRows) < 1 -> 1;
+           true -> (RowTop - MaxRows)
+        end,
+    NewRowBottom =
+        if (RowTop - 1) < 1 -> 1;
+            true -> (RowTop - 1)
+        end,
+    NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
+    if (RowTop == NewRowTop) ->
+            {[], NewBuf};
+        true ->
+            Rows = get_rows_from_ets(NewBuf, TableId, Columns),
+            io:format(user, "Rows ~p OldBuf ~p NewBuf ~p~n", [length(Rows), Buf, NewBuf]),
+            {Rows, NewBuf}
+    end.
+
+get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows, Columns) ->
     CacheSize = ets:info(TableId, size),
     NewRowBottom =
-        if (RowBottom + 1 + MaxRows) > CacheSize -> CacheSize;
-            true -> (RowBottom + 1 + MaxRows)
+        if (RowBottom + MaxRows) > CacheSize -> CacheSize;
+            true -> (RowBottom + MaxRows)
         end,
     NewRowTop =
-        if (NewRowBottom - MaxRows) < 1 -> 1;
-            true -> (NewRowBottom - MaxRows)
+        if (RowBottom + 1) > CacheSize -> CacheSize;
+            true -> (RowBottom + 1)
         end,
-    get_rows_from_ets(Buffer#buffer{row_top=NewRowTop,row_bottom=NewRowBottom}, TableId, Columns).
+    NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
+    if (RowBottom == NewRowBottom) ->
+            {[], NewBuf};
+        true ->
+            Rows = get_rows_from_ets(NewBuf, TableId, Columns),
+            io:format(user, "Rows ~p OldBuf ~p NewBuf ~p~n", [length(Rows), Buf, NewBuf]),
+            {Rows, NewBuf}
+    end.
+
+% EUnit tests --
+
+-include_lib("eunit/include/eunit.hrl").
+
+setup() -> create_buffer().
+teardown(Buf) -> delete_buffer(Buf).
+
+db_test_() ->
+    {timeout, 100000, {
+        setup,
+        fun setup/0,
+        fun teardown/1,
+        {with, [
+            fun read_all_test/1
+        ]}
+        }
+    }.
+
+read_all_test(Buf) ->
+    ok = insert_many(9, Buf),
+    {Rows, NewBuf} = read_all_fwd(Buf, 3, []),
+    io:format(user, "read forward ~p rows~n", [length(Rows)]),
+    {NewRows, NewBuf1} = read_all_bk(NewBuf, 3, []),
+    io:format(user, "read backward ~p rows~n", [length(NewRows)]),
+    {NewRows1, NewBuf2} = get_rows_from(NewBuf1, 3, 9, [{},{},{}]),
+    io:format(user, "read middle-end ~p rows~n", [length(NewRows1)]),
+    {NewRows2, _} = get_rows_from(NewBuf2, 1, 4, [{},{},{}]),
+    io:format(user, "read middle-start ~p rows~n", [length(NewRows2)]),
+    ok.
+
+insert_many(0, _) -> ok;
+insert_many(N, Buf) ->
+    true = insert_rows(Buf, [[N,N,N]]),
+    insert_many(N-1, Buf).
+
+read_all_fwd(Buf, Chunk, Acc) ->
+    {Rows, NewBuf} = get_next_rows(Buf, Chunk, [{},{},{}]),
+    case Rows of
+        [] -> {Acc, Buf};
+        Rows -> read_all_fwd(NewBuf, Chunk, Acc ++ Rows)
+    end.
+
+read_all_bk(Buf, Chunk, Acc) ->
+    {Rows, NewBuf} = get_prev_rows(Buf, Chunk, [{},{},{}]),
+    case Rows of
+        [] -> {Acc, Buf};
+        Rows -> read_all_bk(NewBuf, Chunk, Acc ++ Rows)
+    end.
