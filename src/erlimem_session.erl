@@ -24,8 +24,8 @@
 %% API
 -export([open/2
         , close/1
+        , exec/3
         , exec/4
-        , exec/5
         , read_block/3
         , run_cmd/3
         , start_async_read/2
@@ -49,10 +49,10 @@ open(Type, Opts) ->
 close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
-exec(SeCo, StmtStr, Schema,                      Ctx) -> exec(SeCo, StmtStr, 0, Schema, Ctx).
-exec(SeCo, StmtStr, BufferSize, Schema,          Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize, Schema], Ctx).
+exec(SeCo, StmtStr,                              Ctx) -> exec(SeCo, StmtStr, 0, Ctx).
+exec(SeCo, StmtStr, BufferSize,                  Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize], Ctx).
 read_block(SeCo, StmtRef,                        Ctx) -> run_cmd(read_block, [SeCo, StmtRef], Ctx).
-run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, list_to_tuple([Cmd|Args])).
+run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
 start_async_read(SeCo,       {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, SeCo, StmtRef}).
 get_next(Count, Cols,        {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_next, StmtRef, Count, Cols}).
 
@@ -97,9 +97,13 @@ handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,stateme
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
-handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements=Stmts} = State) ->
+handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema} = State) ->
     erlang:cancel_timer(Timer),
-    NewState = case erlimem_cmds:exec(Msg, Connection) of
+    NewMsg = case Msg of
+        [exec|_] -> list_to_tuple(Msg ++ [Schema]);
+        _ -> list_to_tuple(Msg)
+    end,
+    NewState = case erlimem_cmds:exec(NewMsg, Connection) of
         {ok, Clms, Ref} ->
             Result = {ok, Clms, {?MODULE, Ref, self()}},
             State#state{statements=lists:keystore(Ref, 1, Stmts,
@@ -145,8 +149,9 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 -include_lib("eunit/include/eunit.hrl").
 
 setup() -> 
+    Schema = "Mnesia",
     erlimem:start(),
-    erlimem_session:open(tcp, {localhost, 8124, "Mnesia"}).
+    erlimem_session:open(tcp, {localhost, 8124, Schema}).
 
 teardown(Sess) ->
    % Sess:close(),
@@ -164,28 +169,27 @@ db_test_() ->
     }.
 
 tcp_table_test(Sess) ->
-    Schema = "Mnesia",
     SeCo = {},
-    Res = Sess:exec(SeCo, "create table def (col1 int, col2 char);", Schema),
+    Res = Sess:exec(SeCo, "create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
-    Res0 = insert_range(SeCo, Sess, 210, "def", Schema),
+    Res0 = insert_range(SeCo, Sess, 210, "def"),
     io:format(user, "insert ~p~n", [Res0]),
-    {ok, Clms, Statement} = Sess:exec(SeCo, "select * from def;", 100, Schema),
+    {ok, Clms, Statement} = Sess:exec(SeCo, "select * from def;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(SeCo),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
     Rows = Statement:get_next(100, [{},{}]),
     io:format(user, "received ~p~n", [length(Rows)]),
-    ok = Sess:exec(SeCo, "drop table def;", Schema),
+    ok = Sess:exec(SeCo, "drop table def;"),
     Statement:close(),
     io:format(user, "drop table~n", []),
     Statement:close().
 
-insert_range(_SeCo, _Sess, 0, _TableName, _Schema) -> ok;
-insert_range(SeCo, Sess, N, TableName, Schema) when is_integer(N), N > 0 ->
-    Sess:exec(SeCo, "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');", Schema),
-    insert_range(SeCo, Sess, N-1, TableName, Schema).
+insert_range(_SeCo, _Sess, 0, _TableName) -> ok;
+insert_range(SeCo, Sess, N, TableName) when is_integer(N), N > 0 ->
+    Sess:exec(SeCo, "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');"),
+    insert_range(SeCo, Sess, N-1, TableName).
 
 %% - read_all_blocks(SeCo, Sess, Ref) ->
 %% -     {ok, Rows} = Sess:read_block(SeCo, Ref),
