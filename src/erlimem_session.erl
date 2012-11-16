@@ -78,7 +78,7 @@ connect(tcp, {IpAddr, Port, Schema}) ->
     {ok, {tcp, Socket}, Schema};
 connect(rpc, {Node, Schema}) when Node == node() ->
     connect(connect_local, {Schema});
-connect(connect_rpc, {Node, Schema}) ->
+connect(rpc, {Node, Schema}) ->
     {ok, {rpc, Node}, Schema};
 connect(connect_local, {Schema}) ->
     {ok, {local, undefined}, Schema}.
@@ -175,16 +175,6 @@ db_test_() ->
         }
     }.
 
-%% - tcp_table_test(Sess) ->
-%% -     IsSec = false,
-%% -     io:format(user, "-------- create,insert,select (with security) --------~n", []),
-%% -     ?assertEqual(true, is_integer(SeCo)),
-%% -     ?assertEqual(SeCo, imem_seco:login(SeCo)),
-%% -     ?assertEqual(ok, exec(SeCo, "create table def (col1 int, col2 char);", 0, "Imem", IsSec)),
-%% -     ?assertEqual(ok, insert_range(SeCo, 10, "def", "Imem", IsSec)),
-%% -     {ok, _Clm, _StmtRef} = exec(SeCo, "select * from def;", 100, "Imem", IsSec),
-%% -     ?assertEqual(ok, exec(SeCo, "drop table def;", 0, "Imem", IsSec)).
-
 tcp_table_test(Sess) ->
     Res = Sess:exec("create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
@@ -205,22 +195,3 @@ insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
     Sess:exec("insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');"),
     insert_range(Sess, N-1, TableName).
-
-%% - read_all_blocks(SeCo, Sess, Ref) ->
-%% -     {ok, Rows} = Sess:read_block(SeCo, Ref),
-%% -     io:format(user, "read_block ~p~n", [length(Rows)]),
-%% -     case Rows of
-%% -         [] -> ok;
-%% -         _ -> read_all_blocks(SeCo, Sess, Ref)
-%% -     end.
-%%
-
-%% - create_credentials(Password) ->
-%% -     create_credentials(pwdmd5, Password).
-%% - 
-%% - create_credentials(Type, Password) when is_list(Password) ->
-%% -     create_credentials(Type, list_to_binary(Password));
-%% - create_credentials(Type, Password) when is_integer(Password) ->
-%% -     create_credentials(Type, integer_to_list(list_to_binary(Password)));
-%% - create_credentials(pwdmd5, Password) ->
-%% -     {pwdmd5, erlang:md5(Password)}.
