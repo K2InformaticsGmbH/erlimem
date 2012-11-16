@@ -6,12 +6,11 @@ exec(Cmd, {tcp, Socket}) ->
     gen_tcp:send(Socket, term_to_binary(Cmd)),
     recv_term(Socket, <<>>);
 exec(CmdTuple, {rpc, Node}) ->
-    [Cmd, Args] = lists:split(1, tuple_to_list(CmdTuple)),
-    rpc:call(Node, imem_if, Cmd, Args);
+    {Cmd, Args} = lists:split(1, tuple_to_list(CmdTuple)),
+    rpc:call(Node, imem_sec, lists:nth(1, Cmd), Args);
 exec(CmdTuple, {local, _}) ->
-    io:format(user, "local authinticate ~p~n", [CmdTuple]),
-    [Cmd, Args] = lists:split(1, tuple_to_list(CmdTuple)),
-    apply(imem_if, Cmd, Args).
+    {Cmd, Args} = lists:split(1, tuple_to_list(CmdTuple)),
+    apply(imem_sec, lists:nth(1, Cmd), Args).
 
 recv_term(Sock, Bin) ->
     {ok, Pkt} = gen_tcp:recv(Sock, 0),
@@ -22,4 +21,3 @@ recv_term(Sock, Bin) ->
             recv_term(Sock, NewBin);
         Data -> Data
     end.
-
