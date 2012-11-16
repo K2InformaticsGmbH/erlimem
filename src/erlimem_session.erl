@@ -12,7 +12,8 @@
     connection = {type, handle},
     conn_param,
     idle_timer,
-    schema
+    schema,
+    seco = undefined
 }).
 
 -record(statement, {
@@ -22,13 +23,13 @@
     }).
 
 %% API
--export([open/2
+-export([open/3
         , close/1
+        , exec/2
         , exec/3
-        , exec/4
-        , read_block/3
+        , read_block/2
         , run_cmd/3
-        , start_async_read/2
+        , start_async_read/1
         , get_next/3
 		]).
 
@@ -42,29 +43,31 @@
     code_change/3]).
 
 %% @doc open new session
-open(Type, Opts) ->
-    {ok, Pid} = gen_server:start(?MODULE, [Type, Opts], []),
+open(Type, Opts, Cred) ->
+    {ok, Pid} = gen_server:start(?MODULE, [Type, Opts, Cred], []),
     {?MODULE, Pid}.
 
 close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
-exec(SeCo, StmtStr,                              Ctx) -> exec(SeCo, StmtStr, 0, Ctx).
-exec(SeCo, StmtStr, BufferSize,                  Ctx) -> run_cmd(exec, [SeCo, StmtStr, BufferSize], Ctx).
-read_block(SeCo, StmtRef,                        Ctx) -> run_cmd(read_block, [SeCo, StmtRef], Ctx).
+exec(StmtStr,                                    Ctx) -> exec(StmtStr, 0, Ctx).
+exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
+read_block(StmtRef,                              Ctx) -> run_cmd(read_block, [StmtRef], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
-start_async_read(SeCo,       {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, SeCo, StmtRef}).
+start_async_read(            {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, StmtRef}).
 get_next(Count, Cols,        {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_next, StmtRef, Count, Cols}).
 
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
 
-init([Type, Opts]) ->
+init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) ->
     case connect(Type, Opts) of
         {ok, Connect, Schema} ->
             io:format(user, "started ~p ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
             Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer}};
+            SeCo = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
+            SeCo = erlimem_cmds:exec({login,SeCo}, Connect),
+            {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}};
         {error, Reason} -> {stop, Reason}
     end.
 
@@ -97,11 +100,12 @@ handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,stateme
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
-handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema} = State) ->
+handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo} = State) ->
     erlang:cancel_timer(Timer),
-    NewMsg = case Msg of
-        [exec|_] -> list_to_tuple(Msg ++ [Schema]);
-        _ -> list_to_tuple(Msg)
+    [Cmd|Rest] = Msg,
+    NewMsg = case Cmd of
+        exec -> list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
+        _ -> list_to_tuple([Cmd,SeCo|Rest])
     end,
     NewState = case erlimem_cmds:exec(NewMsg, Connection) of
         {ok, Clms, Ref} ->
@@ -119,7 +123,7 @@ handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer}}.
 
-handle_cast({read_block_async, SeCo, StmtRef}, #state{connection=Connection,statements=Stmts}=State) ->    
+handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
     {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
     case erlimem_cmds:exec({read_block, SeCo, StmtRef}, Connection) of
         {ok, []} -> {noreply, State};
@@ -150,10 +154,13 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 setup() -> 
     Schema = "Mnesia",
+    User = <<"admin">>,
+    Password = erlang:md5(<<"change_on_install">>),
+    Cred = {User, Password},
     erlimem:start(),
-    erlimem_session:open(tcp, {localhost, 8124, Schema}).
+    erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred).
 
-teardown(Sess) ->
+teardown(_Sess) ->
    % Sess:close(),
    erlimem:stop().
 
@@ -168,28 +175,36 @@ db_test_() ->
         }
     }.
 
+%% - tcp_table_test(Sess) ->
+%% -     IsSec = false,
+%% -     io:format(user, "-------- create,insert,select (with security) --------~n", []),
+%% -     ?assertEqual(true, is_integer(SeCo)),
+%% -     ?assertEqual(SeCo, imem_seco:login(SeCo)),
+%% -     ?assertEqual(ok, exec(SeCo, "create table def (col1 int, col2 char);", 0, "Imem", IsSec)),
+%% -     ?assertEqual(ok, insert_range(SeCo, 10, "def", "Imem", IsSec)),
+%% -     {ok, _Clm, _StmtRef} = exec(SeCo, "select * from def;", 100, "Imem", IsSec),
+%% -     ?assertEqual(ok, exec(SeCo, "drop table def;", 0, "Imem", IsSec)).
+
 tcp_table_test(Sess) ->
-    SeCo = {},
-    Res = Sess:exec(SeCo, "create table def (col1 int, col2 char);"),
+    Res = Sess:exec("create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
-    Res0 = insert_range(SeCo, Sess, 210, "def"),
+    Res0 = insert_range(Sess, 210, "def"),
     io:format(user, "insert ~p~n", [Res0]),
-    {ok, Clms, Statement} = Sess:exec(SeCo, "select * from def;", 100),
+    {ok, Clms, Statement} = Sess:exec("select * from def;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(SeCo),
+    Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
     Rows = Statement:get_next(100, [{},{}]),
     io:format(user, "received ~p~n", [length(Rows)]),
-    ok = Sess:exec(SeCo, "drop table def;"),
+    ok = Sess:exec("drop table def;"),
     Statement:close(),
-    io:format(user, "drop table~n", []),
-    Statement:close().
+    io:format(user, "drop table~n", []).
 
-insert_range(_SeCo, _Sess, 0, _TableName) -> ok;
-insert_range(SeCo, Sess, N, TableName) when is_integer(N), N > 0 ->
-    Sess:exec(SeCo, "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');"),
-    insert_range(SeCo, Sess, N-1, TableName).
+insert_range(_Sess, 0, _TableName) -> ok;
+insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
+    Sess:exec("insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');"),
+    insert_range(Sess, N-1, TableName).
 
 %% - read_all_blocks(SeCo, Sess, Ref) ->
 %% -     {ok, Rows} = Sess:read_block(SeCo, Ref),
@@ -198,3 +213,14 @@ insert_range(SeCo, Sess, N, TableName) when is_integer(N), N > 0 ->
 %% -         [] -> ok;
 %% -         _ -> read_all_blocks(SeCo, Sess, Ref)
 %% -     end.
+%%
+
+%% - create_credentials(Password) ->
+%% -     create_credentials(pwdmd5, Password).
+%% - 
+%% - create_credentials(Type, Password) when is_list(Password) ->
+%% -     create_credentials(Type, list_to_binary(Password));
+%% - create_credentials(Type, Password) when is_integer(Password) ->
+%% -     create_credentials(Type, integer_to_list(list_to_binary(Password)));
+%% - create_credentials(pwdmd5, Password) ->
+%% -     {pwdmd5, erlang:md5(Password)}.
