@@ -63,7 +63,7 @@ call(Pid, Msg) ->
 init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) ->
     case connect(Type, Opts) of
         {ok, Connect, Schema} ->
-            io:format(user, "started ~p ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
+            io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
             Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
             SeCo = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
             SeCo = erlimem_cmds:exec({login,SeCo}, Connect),

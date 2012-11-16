@@ -9,6 +9,7 @@ exec(CmdTuple, {rpc, Node}) ->
     [Cmd, Args] = lists:split(1, tuple_to_list(CmdTuple)),
     rpc:call(Node, imem_if, Cmd, Args);
 exec(CmdTuple, {local, _}) ->
+    io:format(user, "local authinticate ~p~n", [CmdTuple]),
     [Cmd, Args] = lists:split(1, tuple_to_list(CmdTuple)),
     apply(imem_if, Cmd, Args).
 
