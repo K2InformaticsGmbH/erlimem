@@ -65,8 +65,13 @@ init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) -
         {ok, Connect, Schema} ->
             io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
             Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            SeCo = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
-            SeCo = erlimem_cmds:exec({login,SeCo}, Connect),
+            case Connect of
+                {local, _} ->
+                    SeCo = undefined;
+                _ ->
+                    SeCo = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
+                    SeCo = erlimem_cmds:exec({login,SeCo}, Connect)
+            end,
             {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}};
         {error, Reason} -> {stop, Reason}
     end.
@@ -76,12 +81,10 @@ connect(tcp, {IpAddr, Port, Schema}) ->
     {ok, Socket} = gen_tcp:connect(Ip, Port, []),
     inet:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
     {ok, {tcp, Socket}, Schema};
-connect(rpc, {Node, Schema}) when Node == node() ->
-    connect(connect_local, {Schema});
-connect(rpc, {Node, Schema}) ->
-    {ok, {rpc, Node}, Schema};
-connect(connect_local, {Schema}) ->
-    {ok, {local, undefined}, Schema}.
+connect(rpc, {Node, Schema}) when Node == node() -> connect(local_sec, {Schema});
+connect(rpc, {Node, Schema})                     -> {ok, {rpc, Node}, Schema};
+connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
+connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
 handle_call(stop, _From, #state{statements=Stmts}=State) ->
     _ = [erlimem_buf:delete_buffer(Buf) || #statement{buf=Buf} <- Stmts],
