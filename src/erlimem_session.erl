@@ -178,6 +178,8 @@ db_test_() ->
 tcp_table_test(Sess) ->
     Res = Sess:exec("create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
+    {error, Result} = Sess:exec("create table def (col1 int, col2 char);"),
+    io:format(user, "Duplicate Create ~p~n", [Result]),
     Res0 = insert_range(Sess, 210, "def"),
     io:format(user, "insert ~p~n", [Res0]),
     {ok, Clms, Statement} = Sess:exec("select * from def;", 100),
