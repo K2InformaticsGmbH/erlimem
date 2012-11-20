@@ -12,19 +12,14 @@ exec(CmdTuple, {local_sec, _}) ->
 exec(CmdTuple, {local, _}) ->
     exec_catch(node(), imem_meta, CmdTuple).
 
-exec_catch(Node, Mod, CmdTuple) when Node =:= node() ->
-    {Cmd, Args} = lists:split(1, tuple_to_list(CmdTuple)),
-    Fun = lists:nth(1, Cmd),
-    try
-        apply(Mod, Fun, Args)
-    catch
-        _Class:Result -> {error, Result}
-    end;
 exec_catch(Node, Mod, CmdTuple) ->
     {Cmd, Args} = lists:split(1, tuple_to_list(CmdTuple)),
     Fun = lists:nth(1, Cmd),
     try
-        rpc:call(Node, Mod, Fun, Args)
+        case Node of
+            Node when Node =:= node() -> apply(Mod, Fun, Args);
+            _ -> rpc:call(Node, Mod, Fun, Args)
+        end
     catch
         _Class:Result -> {error, Result}
     end.
