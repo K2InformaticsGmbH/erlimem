@@ -82,7 +82,7 @@ connect(tcp, {IpAddr, Port, Schema}) ->
     inet:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
     {ok, {tcp, Socket}, Schema};
 connect(rpc, {Node, Schema}) when Node == node() -> connect(local_sec, {Schema});
-connect(rpc, {Node, Schema})                     -> {ok, {rpc, Node}, Schema};
+connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
 connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
@@ -173,12 +173,13 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-            fun tcp_table_test/1
+                fun tcp_table_craete_select_drop/1
+            ,   fun tcp_table_all_tables/1
         ]}
         }
     }.
 
-tcp_table_test(Sess) ->
+tcp_table_craete_select_drop(Sess) ->
     Res = Sess:exec("create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
     {error, Result} = Sess:exec("create table def (col1 int, col2 char);"),
@@ -195,6 +196,15 @@ tcp_table_test(Sess) ->
     ok = Sess:exec("drop table def;"),
     Statement:close(),
     io:format(user, "drop table~n", []).
+
+tcp_table_all_tables(Sess) ->
+    {ok, Clms, Statement} = Sess:exec("select * from all_tables;", 100),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
+    Statement:start_async_read(),
+    timer:sleep(1000),
+    io:format(user, "receiving...~n", []),
+    Rows = Statement:get_next(100, [{},{}]),
+    io:format(user, "received ~p~n", [Rows]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
