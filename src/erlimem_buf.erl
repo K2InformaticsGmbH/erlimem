@@ -28,7 +28,8 @@ format_row([{_,date,_}|Columns],[R|Rows], Acc) ->
     <<Y:32, Mon:16, D:16, H:16, M:16, S:16>> = list_to_binary(R),
     Date = binary_to_list(list_to_binary([<<D:16>>, ".", <<Mon:16>>, ".", <<Y:32>>, " ", <<H:16>>, ":", <<M:16>>, ":", <<S:16>>])),
     format_row(Columns, Rows, Acc ++ [Date]);
-format_row([_|Columns],[R|Row], Acc) -> format_row(Columns, Row, Acc ++ [R]).
+format_row([_|Columns],[R|Row], Acc) -> format_row(Columns, Row, Acc ++ [R]);
+format_row([],[R|Row], Acc) -> format_row([], Row, Acc ++ [R]).
 
 
 insert_rows(#buffer{tableid=Results}, Rows) ->
