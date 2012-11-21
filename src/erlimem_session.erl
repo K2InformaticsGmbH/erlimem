@@ -172,9 +172,8 @@ db_test_() ->
         setup,
         fun setup/0,
         fun teardown/1,
-        {with, [
-                fun tcp_table_craete_select_drop/1
-            ,   fun tcp_table_all_tables/1
+        {with, [ fun tcp_table_craete_select_drop/1
+               , fun tcp_all_tables/1
         ]}
         }
     }.
@@ -197,13 +196,13 @@ tcp_table_craete_select_drop(Sess) ->
     Statement:close(),
     io:format(user, "drop table~n", []).
 
-tcp_table_all_tables(Sess) ->
+tcp_all_tables(Sess) ->
     {ok, Clms, Statement} = Sess:exec("select * from all_tables;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
-    Rows = Statement:get_next(100, [{},{}]),
+    Rows = Statement:get_next(100, [{}]),
     io:format(user, "received ~p~n", [Rows]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
