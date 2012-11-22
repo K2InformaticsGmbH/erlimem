@@ -22,16 +22,16 @@ create_buffer() ->
 delete_buffer(#buffer{tableid=Tab}) ->
     true = ets:delete(Tab).
 
-format_row(Cols, Row) when is_tuple(Row) -> format_row(Cols,lists:nthtail(1, tuple_to_list(Row)), []);
-format_row(Cols, Row)                    -> format_row(Cols,Row,[]).
-format_row([],[], Acc) -> Acc;
-format_row([{_,date,_}|Columns],[R|Rows], Acc) ->
-    <<Y:32, Mon:16, D:16, H:16, M:16, S:16>> = list_to_binary(R),
-    Date = binary_to_list(list_to_binary([<<D:16>>, ".", <<Mon:16>>, ".", <<Y:32>>, " ", <<H:16>>, ":", <<M:16>>, ":", <<S:16>>])),
-    format_row(Columns, Rows, Acc ++ [Date]);
-format_row([_|Columns],[R|Row], Acc) -> format_row(Columns, Row, Acc ++ [R]);
-format_row([],[R|Row], Acc) -> format_row([], Row, Acc ++ [R]).
-
+% - format_row(Cols, Row) when is_tuple(Row) -> format_row(Cols,lists:nthtail(1, tuple_to_list(Row)), []);
+% - format_row(Cols, Row)                    -> format_row(Cols,Row,[]).
+% - format_row([],[], Acc) -> Acc;
+% - format_row([{_,date,_}|Columns],[R|Rows], Acc) ->
+% -     <<Y:32, Mon:16, D:16, H:16, M:16, S:16>> = list_to_binary(R),
+% -     Date = binary_to_list(list_to_binary([<<D:16>>, ".", <<Mon:16>>, ".", <<Y:32>>, " ", <<H:16>>, ":", <<M:16>>, ":", <<S:16>>])),
+% -     format_row(Columns, Rows, Acc ++ [Date]);
+% - format_row([_|Columns],[R|Row], Acc) -> format_row(Columns, Row, Acc ++ [R]);
+% - format_row([],[R|Row], Acc) -> format_row([], Row, Acc ++ [R]).
+% - 
 
 insert_rows(#buffer{tableid=TableId}, Rows) ->
     NrOfRows = length(Rows),
@@ -39,11 +39,12 @@ insert_rows(#buffer{tableid=TableId}, Rows) ->
     ets:insert(TableId, [{I, R}||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), lists:reverse(Rows))]).
 
 % TODO - complete state of the buffer (true/false) need to be determined
-get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd}, TableId, Columns) ->
+get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd}, TableId, _Columns) ->
     CacheSize = ets:info(TableId, size),
     Keys = lists:seq(RowStart, RowEnd),
     Rows = [ets:lookup(TableId, K1)||K1<-Keys],
-    {[[integer_to_list(I)|format_row(Columns,R)] || [{I,R}|_] <-Rows], true, CacheSize}.
+    %{[[integer_to_list(I)|format_row(Columns,R)] || [{I,R}|_] <-Rows], true, CacheSize}.
+    {[[integer_to_list(I)|R] || [{I,R}|_] <-Rows], true, CacheSize}.
 
 % TODO - complete state of the buffer (true/false) need to be determined
 get_buffer_max(#buffer{tableid=TableId}) ->
@@ -75,9 +76,9 @@ get_prev_rows(#buffer{row_top=RowTop, tableid=TableId} = Buf, MaxRows, Columns) 
     if (RowTop == NewRowTop) ->
             {[], NewBuf};
         true ->
-            Rows = get_rows_from_ets(NewBuf, TableId, Columns),
+            {Rows,_,_} = Result = get_rows_from_ets(NewBuf, TableId, Columns),
             io:format(user, "Rows ~p OldBuf ~p NewBuf ~p~n", [length(Rows), Buf, NewBuf]),
-            {Rows, NewBuf}
+            {Result, NewBuf}
     end.
 
 get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows, Columns) ->
@@ -94,9 +95,9 @@ get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows, Col
     if (RowBottom == NewRowBottom) ->
             {[], NewBuf};
         true ->
-            Rows = get_rows_from_ets(NewBuf, TableId, Columns),
+            {Rows,_,_} = Result = get_rows_from_ets(NewBuf, TableId, Columns),
             io:format(user, "Rows ~p OldBuf ~p NewBuf ~p~n", [length(Rows), Buf, NewBuf]),
-            {Rows, NewBuf}
+            {Result, NewBuf}
     end.
 
 % EUnit tests --
