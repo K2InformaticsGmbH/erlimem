@@ -194,7 +194,6 @@ handle_cast(_Request, State) ->
     {noreply, State}.
 
 handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
-    io:format(user, "evt ~p~n", [Evt]),
     case lists:keyfind(activity, 1, EvtPids) of
         {_, Pid} when is_pid(Pid) -> Pid ! Evt;
         Found -> io:format(user, "# ~p <- ~p~n", [Found, Evt])
@@ -203,7 +202,6 @@ handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
 handle_info({_,{S, Ctx, _}} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
                                                                           S =:= delete_object;
                                                                           S =:= delete ->
-    io:format(user, "evt ~p~n", [Evt]),
     Tab = case Ctx of
         {T,_} -> T;
         Ctx -> element(1, Ctx)
@@ -219,7 +217,6 @@ handle_info({_,{S, Ctx, _}} = Evt, #state{event_pids=EvtPids}=State) when S =:= 
     {noreply, State};
 handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:= write;
                                                                             D =:= delete ->
-    io:format(user, "evt ~p~n", [Evt]),
     case lists:keyfind({table, Tab, detailed}, 1, EvtPids) of
         {_, Pid} when is_pid(Pid) -> Pid ! Evt;
         Found -> io:format(user, "# ~p <- ~p~n", [Found, Evt])
