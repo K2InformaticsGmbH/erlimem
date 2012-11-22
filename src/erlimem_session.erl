@@ -13,7 +13,8 @@
     conn_param,
     idle_timer,
     schema,
-    seco = undefined
+    seco = undefined,
+    event_pids=[]
 }).
 
 -record(statement, {
@@ -145,14 +146,21 @@ handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,stateme
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
-handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo} = State) ->
+handle_call(Msg, From, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
         exec ->
+            NewEvtPids = EvtPids,
             [_,MaxRows|_] = Rest,
             list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
+        subscribe ->
+            MaxRows = 0,
+            [Evt|_] = Rest,
+            NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
+            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
         _ ->
+            NewEvtPids = EvtPids,
             MaxRows = 0,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
@@ -171,7 +179,7 @@ handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements
             State
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Result,NewState#state{idle_timer=NewTimer}}.
+    {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
 
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
     {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
@@ -185,6 +193,38 @@ handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements
 handle_cast(_Request, State) ->
     {noreply, State}.
 
+handle_info({complete, _} = Evt, #state{event_pids=EvtPids}=State) ->
+    io:format(user, "evt ~p~n", [Evt]),
+    case lists:keyfind(activity, 1, EvtPids) of
+        {_, Pid} -> Pid ! Evt;
+        _ -> io:format(user, "# Evt ~p~n", Evt)
+    end,
+    {noreply, State};
+handle_info({S, Ctx, _} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
+                                                                    S =:= delete_object;
+                                                                    S =:= delete ->
+    io:format(user, "evt ~p~n", [Evt]),
+    Tab = case Ctx of
+        {T,_} -> T;
+        Ctx -> element(1, Ctx)
+    end,
+    case lists:keyfind({table, Tab}, 1, EvtPids) of
+        {_, Pid} -> Pid ! Evt;
+        _ ->
+            case lists:keyfind({table, Tab, simple}, 1, EvtPids) of
+                {_, Pid} -> Pid ! Evt;
+                _ -> io:format(user, "# Evt ~p~n", Evt)
+            end
+    end,
+    {noreply, State};
+handle_info({D,Tab,_,_,_} = Evt, #state{event_pids=EvtPids}=State) when D =:= write;
+                                                                      D =:= delete ->
+    io:format(user, "evt ~p~n", [Evt]),
+    case lists:keyfind({table, Tab, detailed}, 1, EvtPids) of
+        {_, Pid} -> Pid ! Evt;
+        _ -> io:format(user, "# Evt ~p~n", Evt)
+    end,
+    {noreply, State};
 handle_info(timeout, State) ->
     close({?MODULE, self()}),
     {noreply, State};
@@ -203,21 +243,25 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 -include_lib("eunit/include/eunit.hrl").
 
 setup(Type) -> 
-    application:load(imem),
-    {ok, Schema} = application:get_env(imem, mnesia_schema_name),
-    {ok, Cwd} = file:get_cwd(),
-    NewSchema = Cwd ++ "/../" ++ Schema,
-    application:set_env(imem, mnesia_schema_name, NewSchema),
-    application:set_env(imem, mnesia_node_type, ram),
-    application:start(imem),
     User = <<"admin">>,
     Password = erlang:md5(<<"change_on_install">>),
     Cred = {User, Password},
     erlimem:start(),
+    Schema = if ((Type =:= local) orelse (Type =:= local_sec)) ->
+            application:load(imem),
+            {ok, S} = application:get_env(imem, mnesia_schema_name),
+            {ok, Cwd} = file:get_cwd(),
+            NewSchema = Cwd ++ "/../" ++ S,
+            application:set_env(imem, mnesia_schema_name, NewSchema),
+            application:set_env(imem, mnesia_node_type, ram),
+            application:start(imem),
+            S;
+        true -> "Imem"
+    end,
     case Type of
-        tcp -> erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred);
-        local_sec -> erlimem_session:open(local_sec, {Schema}, Cred);
-        local -> erlimem_session:open(local, {Schema}, Cred)
+        tcp         -> erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred);
+        local_sec   -> erlimem_session:open(local_sec, {Schema}, Cred);
+        local       -> erlimem_session:open(local, {Schema}, Cred)
     end.
 
 setup() ->
@@ -233,17 +277,19 @@ db_test_() ->
         setup,
         fun setup/0,
         fun teardown/1,
-        {with, [ fun tcp_table_craete_select_drop/1
-               , fun tcp_all_tables/1
+        {with, [
+                fun tcp_all_tables/1,
+                fun tcp_table_craete_select_drop/1
         ]}
         }
     }.
 
 tcp_table_craete_select_drop(Sess) ->
-    Schema = imem_meta:schema(),
+    Schema = "Imem",
     io:format(user, "got schema ~p~n", [Schema]),
     Res = Sess:exec("create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
+    Sess:run_cmd(subscribe, [{table,def,simple}]),
     % - {error, Result} = Sess:exec("create table def (col1 int, col2 char);"),
     % - io:format(user, "Duplicate Create ~p~n", [Result]),
     Res0 = insert_range(Sess, 210, "def"),
@@ -253,7 +299,7 @@ tcp_table_craete_select_drop(Sess) ->
     Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
-    Rows = Statement:get_next(100, [{},{}]),
+    {Rows,_,_} = Statement:get_next(100, []),
     io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec("drop table def;"),
     Statement:close(),
@@ -265,7 +311,7 @@ tcp_all_tables(Sess) ->
     Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
-    Rows = Statement:get_next(100, [{}]),
+    Rows = Statement:get_next(100, []),
     io:format(user, "received ~p~n", [Rows]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
