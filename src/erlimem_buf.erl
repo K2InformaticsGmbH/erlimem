@@ -13,6 +13,7 @@
         , get_prev_rows/3
         , get_rows_from/4
         , get_next_rows/3
+        , get_buffer_max/1
         ]).
 
 create_buffer() ->
@@ -32,15 +33,21 @@ format_row([_|Columns],[R|Row], Acc) -> format_row(Columns, Row, Acc ++ [R]);
 format_row([],[R|Row], Acc) -> format_row([], Row, Acc ++ [R]).
 
 
-insert_rows(#buffer{tableid=Results}, Rows) ->
+insert_rows(#buffer{tableid=TableId}, Rows) ->
     NrOfRows = length(Rows),
-    CacheSize = ets:info(Results, size),
-    ets:insert(Results, [{I, R}||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), lists:reverse(Rows))]).
+    CacheSize = ets:info(TableId, size),
+    ets:insert(TableId, [{I, R}||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), lists:reverse(Rows))]).
 
+% TODO - complete state of the buffer (true/false) need to be determined
 get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd}, TableId, Columns) ->
+    CacheSize = ets:info(TableId, size),
     Keys = lists:seq(RowStart, RowEnd),
     Rows = [ets:lookup(TableId, K1)||K1<-Keys],
-    [[integer_to_list(I)|format_row(Columns,R)] || [{I,R}|_] <-Rows].
+    {[[integer_to_list(I)|format_row(Columns,R)] || [{I,R}|_] <-Rows], true, CacheSize}.
+
+% TODO - complete state of the buffer (true/false) need to be determined
+get_buffer_max(#buffer{tableid=TableId}) ->
+    {ok, true, ets:info(TableId, size)}.
 
 get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows, Columns) ->
     CacheSize = ets:info(TableId, size),

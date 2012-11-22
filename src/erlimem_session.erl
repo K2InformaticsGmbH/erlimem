@@ -19,7 +19,8 @@
 -record(statement, {
         buf,
         ref,
-        result
+        result,
+        maxrows
     }).
 
 %% API
@@ -31,6 +32,10 @@
         , run_cmd/3
         , start_async_read/1
         , get_next/3
+        , get_buffer_max/1
+        , rows_from/2
+        , prev_rows/1
+        , next_rows/1
 		]).
 
 %% gen_server callbacks
@@ -56,6 +61,10 @@ read_block(StmtRef,                              Ctx) -> run_cmd(read_block, [St
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
 start_async_read(            {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, StmtRef}).
 get_next(Count, Cols,        {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_next, StmtRef, Count, Cols}).
+get_buffer_max(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_buffer_max, StmtRef}).
+rows_from(RowId,             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {rows_from, StmtRef, RowId}).
+prev_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {prev_rows, StmtRef}).
+next_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {next_rows, StmtRef}).
 
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
@@ -95,6 +104,39 @@ handle_call({close_statement, StmtRef}, _From, #state{statements=Stmts}=State) -
         false                                  -> NewStmts = Stmts
     end,
     {reply,ok,State#state{statements=NewStmts}};
+
+handle_call({get_buffer_max, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    Count = erlimem_buf:get_buffer_max(Buf),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Count,State#state{idle_timer=NewTimer}};
+handle_call({rows_from, Ref, RowId}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf, maxrows=MaxRows} = Stmt,
+    {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows, []),
+    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
+handle_call({prev_rows, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf, maxrows=MaxRows} = Stmt,
+    {Rows, NewBuf} = erlimem_buf:get_prev_rows(Buf, MaxRows, []),
+    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
+handle_call({next_rows, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf, maxrows=MaxRows} = Stmt,
+    {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows, []),
+    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
+
 handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
@@ -107,16 +149,21 @@ handle_call(Msg, _From, #state{connection=Connection,idle_timer=Timer,statements
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
-        exec -> list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
-        _ -> list_to_tuple([Cmd,SeCo|Rest])
+        exec ->
+            [_,MaxRows|_] = Rest,
+            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
+        _ ->
+            MaxRows = 0,
+            list_to_tuple([Cmd,SeCo|Rest])
     end,
     NewState = case erlimem_cmds:exec(NewMsg, Connection) of
         {ok, Clms, Ref} ->
             Result = {ok, Clms, {?MODULE, Ref, self()}},
             State#state{statements=lists:keystore(Ref, 1, Stmts,
-                            {Ref, #statement{ result={columns, Clms}
-                                            , ref=Ref
-                                            , buf=erlimem_buf:create_buffer()}
+                            {Ref, #statement{ result  = {columns, Clms}
+                                            , ref     = Ref
+                                            , buf     = erlimem_buf:create_buffer()
+                                            , maxrows = MaxRows}
                             })
                        };
         Res ->
@@ -174,7 +221,7 @@ setup(Type) ->
     end.
 
 setup() ->
-    setup(local_sec).
+    setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
