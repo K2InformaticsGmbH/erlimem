@@ -146,7 +146,7 @@ handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,stateme
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
-handle_call(Msg, From, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
+handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
@@ -158,7 +158,7 @@ handle_call(Msg, From, #state{connection=Connection,idle_timer=Timer,statements=
             MaxRows = 0,
             [Evt|_] = Rest,
             NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
-            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
+            list_to_tuple([Cmd,SeCo|Rest]);
         _ ->
             NewEvtPids = EvtPids,
             MaxRows = 0,
@@ -193,16 +193,16 @@ handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements
 handle_cast(_Request, State) ->
     {noreply, State}.
 
-handle_info({complete, _} = Evt, #state{event_pids=EvtPids}=State) ->
+handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
     io:format(user, "evt ~p~n", [Evt]),
     case lists:keyfind(activity, 1, EvtPids) of
-        {_, Pid} -> Pid ! Evt;
-        _ -> io:format(user, "# Evt ~p~n", Evt)
+        {_, Pid} when is_pid(Pid) -> Pid ! Evt;
+        Found -> io:format(user, "# ~p <- ~p~n", [Found, Evt])
     end,
     {noreply, State};
-handle_info({S, Ctx, _} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
-                                                                    S =:= delete_object;
-                                                                    S =:= delete ->
+handle_info({_,{S, Ctx, _}} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
+                                                                          S =:= delete_object;
+                                                                          S =:= delete ->
     io:format(user, "evt ~p~n", [Evt]),
     Tab = case Ctx of
         {T,_} -> T;
@@ -212,23 +212,24 @@ handle_info({S, Ctx, _} = Evt, #state{event_pids=EvtPids}=State) when S =:= writ
         {_, Pid} -> Pid ! Evt;
         _ ->
             case lists:keyfind({table, Tab, simple}, 1, EvtPids) of
-                {_, Pid} -> Pid ! Evt;
-                _ -> io:format(user, "# Evt ~p~n", Evt)
+                {_, Pid} when is_pid(Pid) -> Pid ! Evt;
+                Found -> io:format(user, "# ~p <- ~p~n", [Found, Evt])
             end
     end,
     {noreply, State};
-handle_info({D,Tab,_,_,_} = Evt, #state{event_pids=EvtPids}=State) when D =:= write;
-                                                                      D =:= delete ->
+handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:= write;
+                                                                            D =:= delete ->
     io:format(user, "evt ~p~n", [Evt]),
     case lists:keyfind({table, Tab, detailed}, 1, EvtPids) of
-        {_, Pid} -> Pid ! Evt;
-        _ -> io:format(user, "# Evt ~p~n", Evt)
+        {_, Pid} when is_pid(Pid) -> Pid ! Evt;
+        Found -> io:format(user, "# ~p <- ~p~n", [Found, Evt])
     end,
     {noreply, State};
 handle_info(timeout, State) ->
     close({?MODULE, self()}),
     {noreply, State};
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    io:format(user, "*************** Info ~p~n", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #state{conn_param={Type, Opts},idle_timer=Timer}) ->
@@ -265,7 +266,7 @@ setup(Type) ->
     end.
 
 setup() ->
-    setup(tcp).
+    setup(local).
 
 teardown(_Sess) ->
    % Sess:close(),
@@ -278,7 +279,7 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-                fun tcp_all_tables/1,
+%                fun tcp_all_tables/1,
                 fun tcp_table_craete_select_drop/1
         ]}
         }
@@ -286,22 +287,24 @@ db_test_() ->
 
 tcp_table_craete_select_drop(Sess) ->
     Schema = "Imem",
+    Table = def,
     io:format(user, "got schema ~p~n", [Schema]),
-    Res = Sess:exec("create table def (col1 int, col2 char);"),
+    Res = Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
-    Sess:run_cmd(subscribe, [{table,def,simple}]),
-    % - {error, Result} = Sess:exec("create table def (col1 int, col2 char);"),
+    Res1 = Sess:run_cmd(subscribe, [{table,Table,simple}]),
+    io:format(user, "subscribe ~p~n", [Res1]),
+    % - {error, Result} = Sess:exec("create table Table (col1 int, col2 char);"),
     % - io:format(user, "Duplicate Create ~p~n", [Result]),
-    Res0 = insert_range(Sess, 210, "def"),
+    Res0 = insert_range(Sess, 2, atom_to_list(Table)),
     io:format(user, "insert ~p~n", [Res0]),
-    {ok, Clms, Statement} = Sess:exec("select * from def;", 100),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
     {Rows,_,_} = Statement:get_next(100, []),
     io:format(user, "received ~p~n", [length(Rows)]),
-    ok = Sess:exec("drop table def;"),
+    ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
     Statement:close(),
     io:format(user, "drop table~n", []).
 
