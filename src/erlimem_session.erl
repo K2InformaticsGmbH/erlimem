@@ -155,17 +155,31 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 -include_lib("eunit/include/eunit.hrl").
 
-setup() -> 
-    Schema = "Mnesia",
+setup(Type) -> 
+    application:load(imem),
+    {ok, Schema} = application:get_env(imem, mnesia_schema_name),
+    {ok, Cwd} = file:get_cwd(),
+    NewSchema = Cwd ++ "/../" ++ Schema,
+    application:set_env(imem, mnesia_schema_name, NewSchema),
+    application:set_env(imem, mnesia_node_type, ram),
+    application:start(imem),
     User = <<"admin">>,
     Password = erlang:md5(<<"change_on_install">>),
     Cred = {User, Password},
     erlimem:start(),
-    erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred).
+    case Type of
+        tcp -> erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred);
+        local_sec -> erlimem_session:open(local_sec, {Schema}, Cred);
+        local -> erlimem_session:open(local, {Schema}, Cred)
+    end.
+
+setup() ->
+    setup(local_sec).
 
 teardown(_Sess) ->
    % Sess:close(),
-   erlimem:stop().
+    erlimem:stop(),
+    application:stop(imem).
 
 db_test_() ->
     {timeout, 1000000, {
@@ -179,10 +193,12 @@ db_test_() ->
     }.
 
 tcp_table_craete_select_drop(Sess) ->
+    Schema = imem_meta:schema(),
+    io:format(user, "got schema ~p~n", [Schema]),
     Res = Sess:exec("create table def (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
-    {error, Result} = Sess:exec("create table def (col1 int, col2 char);"),
-    io:format(user, "Duplicate Create ~p~n", [Result]),
+    % - {error, Result} = Sess:exec("create table def (col1 int, col2 char);"),
+    % - io:format(user, "Duplicate Create ~p~n", [Result]),
     Res0 = insert_range(Sess, 210, "def"),
     io:format(user, "insert ~p~n", [Res0]),
     {ok, Clms, Statement} = Sess:exec("select * from def;", 100),
