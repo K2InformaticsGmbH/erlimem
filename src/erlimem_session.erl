@@ -21,7 +21,8 @@
         buf,
         ref,
         result,
-        maxrows
+        maxrows,
+        row_fun = fun(X) -> X end
     }).
 
 %% API
@@ -165,13 +166,14 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
             list_to_tuple([Cmd,SeCo|Rest])
     end,
     NewState = case erlimem_cmds:exec(NewMsg, Connection) of
-        {ok, Clms, Ref} ->
+        {ok, Clms, Fun, Ref} ->
             Result = {ok, Clms, {?MODULE, Ref, self()}},
             State#state{statements=lists:keystore(Ref, 1, Stmts,
                             {Ref, #statement{ result  = {columns, Clms}
                                             , ref     = Ref
                                             , buf     = erlimem_buf:create_buffer()
-                                            , maxrows = MaxRows}
+                                            , maxrows = MaxRows
+                                            , row_fun = Fun}
                             })
                        };
         Res ->
@@ -182,11 +184,11 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
 
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
-    {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
-    case erlimem_cmds:exec({read_block, SeCo, StmtRef}, Connection) of
+    {_, #statement{buf=Buffer, row_fun=Fun}} = lists:keyfind(StmtRef, 1, Stmts),
+    case erlimem_cmds:exec({fetch_recs, SeCo, StmtRef}, Connection) of
         {ok, []} -> {noreply, State};
-        {ok, Rows} ->
-            erlimem_buf:insert_rows(Buffer, Rows),
+        {Rows, Complete} ->
+            erlimem_buf:insert_rows(Buffer, [Fun(R) || R <- Rows]),
             gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
             {noreply, State}
     end;
@@ -256,6 +258,7 @@ setup(Type) ->
             S;
         true -> "Imem"
     end,
+    io:format(user, "schema ~p~n", [Schema]),
     case Type of
         tcp         -> erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred);
         local_sec   -> erlimem_session:open(local_sec, {Schema}, Cred);
@@ -276,8 +279,8 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-%                fun tcp_all_tables/1,
-                fun tcp_table_craete_select_drop/1
+                fun tcp_all_tables/1
+                , fun tcp_table_craete_select_drop/1
         ]}
         }
     }.
@@ -292,7 +295,7 @@ tcp_table_craete_select_drop(Sess) ->
     io:format(user, "subscribe ~p~n", [Res1]),
     % - {error, Result} = Sess:exec("create table Table (col1 int, col2 char);"),
     % - io:format(user, "Duplicate Create ~p~n", [Result]),
-    Res0 = insert_range(Sess, 2, atom_to_list(Table)),
+    Res0 = insert_range(Sess, 210, atom_to_list(Table)),
     io:format(user, "insert ~p~n", [Res0]),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
@@ -306,7 +309,7 @@ tcp_table_craete_select_drop(Sess) ->
     io:format(user, "drop table~n", []).
 
 tcp_all_tables(Sess) ->
-    {ok, Clms, Statement} = Sess:exec("select * from all_tables;", 100),
+    {ok, Clms, Statement} = Sess:exec("select qname from all_tables;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
