@@ -100,10 +100,12 @@ connect(local, {Schema})                         -> {ok, {local, undefined}, Sch
 handle_call(stop, _From, #state{statements=Stmts}=State) ->
     _ = [erlimem_buf:delete_buffer(Buf) || #statement{buf=Buf} <- Stmts],
     {stop,normal,State};
-handle_call({close_statement, StmtRef}, _From, #state{statements=Stmts}=State) ->
+handle_call({close_statement, StmtRef}, _From, #state{connection=Connection,seco=SeCo,statements=Stmts}=State) ->
     case lists:keytake(StmtRef, 1, Stmts) of
-        {value, {StmtRef, #statement{buf=Buf}}, NewStmts} -> erlimem_buf:delete_buffer(Buf);
-        false                                  -> NewStmts = Stmts
+        {value, {StmtRef, #statement{buf=Buf}}, NewStmts} ->
+            erlimem_buf:delete_buffer(Buf),
+            erlimem_cmds:exec({close, SeCo, StmtRef}, Connection);
+        false -> NewStmts = Stmts
     end,
     {reply,ok,State#state{statements=NewStmts}};
 
@@ -185,9 +187,9 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
 
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
     {_, #statement{buf=Buffer, row_fun=Fun}} = lists:keyfind(StmtRef, 1, Stmts),
-    case erlimem_cmds:exec({fetch_recs, SeCo, StmtRef}, Connection) of
+    case erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection) of
         {ok, []} -> {noreply, State};
-        {Rows, Complete} ->
+        {Rows, _Complete} ->
             erlimem_buf:insert_rows(Buffer, [Fun(R) || R <- Rows]),
             gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
             {noreply, State}
@@ -303,9 +305,10 @@ tcp_table_craete_select_drop(Sess) ->
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
     {Rows,_,_} = Statement:get_next(100, []),
+    Statement:close(),
+    io:format(user, "statement closed~n", []),
     io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
-    Statement:close(),
     io:format(user, "drop table~n", []).
 
 tcp_all_tables(Sess) ->
@@ -315,7 +318,9 @@ tcp_all_tables(Sess) ->
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
     Rows = Statement:get_next(100, []),
-    io:format(user, "received ~p~n", [Rows]).
+    io:format(user, "received ~p~n", [Rows]),
+    Statement:close(),
+    io:format(user, "statement closed~n", []).
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
