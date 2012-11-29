@@ -4,9 +4,10 @@
     { row_top = 0
     , row_bottom = 0
     , tableid
+    , rowfun
     }).
 
--export([create_buffer/0
+-export([create_buffer/1
         , delete_buffer/1
         , get_rows_from_ets/3
         , insert_rows/2
@@ -14,10 +15,13 @@
         , get_rows_from/4
         , get_next_rows/3
         , get_buffer_max/1
+        , rfun/1
         ]).
 
-create_buffer() ->
-    #buffer{tableid=ets:new(results, [ordered_set, public])}.
+create_buffer(Fun) ->
+    #buffer{tableid=ets:new(results, [ordered_set, public])
+           , rowfun = Fun
+    }.
 
 delete_buffer(#buffer{tableid=Tab}) ->
     true = ets:delete(Tab).
@@ -36,16 +40,26 @@ delete_buffer(#buffer{tableid=Tab}) ->
 insert_rows(#buffer{tableid=TableId}, Rows) ->
     NrOfRows = length(Rows),
     CacheSize = ets:info(TableId, size),
-    ets:insert(TableId, [{I, R}||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), lists:reverse(Rows))]).
+    ets:insert(TableId, [list_to_tuple([I|R])||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), lists:reverse(Rows))]).
 
 % TODO - complete state of the buffer (true/false) need to be determined
-get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd}, TableId, _Columns) ->
+get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd, rowfun=F}, TableId, _Columns) ->
     CacheSize = ets:info(TableId, size),
-    Keys = lists:seq(RowStart, RowEnd),
-    Rows = [ets:lookup(TableId, K1)||K1<-Keys],
-    %{[[integer_to_list(I)|format_row(Columns,R)] || [{I,R}|_] <-Rows], true, CacheSize}.
-    {[[integer_to_list(I)|R] || [{I,R}|_] <-Rows], true, CacheSize}.
+    [FirstRow] = ets:lookup(TableId, 1),
+    {MatchHead, MatchExpr} = build_match(size(FirstRow)),
+    Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
+    NewRows = [F(R) || R <- Rows],
+    {NewRows, true, CacheSize}.
 
+rfun([I|R]) -> [integer_to_list(I)|R].
+    
+build_match(Count) -> build_match(Count, {[],[]}).
+build_match(0, {Head,Expr}) -> {list_to_tuple(Head),Expr};
+build_match(2, {Head,Expr}) -> build_match(1, {['_'|Head],Expr});
+build_match(Count, {Head,Expr}) ->
+    MVar = list_to_atom("$" ++ integer_to_list(Count)),
+    build_match(Count-1, {[MVar|Head], [MVar|Expr]}).
+    
 % TODO - complete state of the buffer (true/false) need to be determined
 get_buffer_max(#buffer{tableid=TableId}) ->
     {ok, true, ets:info(TableId, size)}.
@@ -104,7 +118,7 @@ get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows, Col
 
 -include_lib("eunit/include/eunit.hrl").
 
-setup() -> create_buffer().
+setup() -> create_buffer(fun rfun/1).
 teardown(Buf) -> delete_buffer(Buf).
 
 db_test_() ->

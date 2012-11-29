@@ -30,6 +30,7 @@
         , close/1
         , exec/2
         , exec/3
+        , exec/4
         , read_block/2
         , run_cmd/3
         , start_async_read/1
@@ -59,6 +60,7 @@ close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef
 
 exec(StmtStr,                                    Ctx) -> exec(StmtStr, 0, Ctx).
 exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
+exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
 read_block(StmtRef,                              Ctx) -> run_cmd(read_block, [StmtRef], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
 start_async_read(            {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, StmtRef}).
@@ -152,20 +154,29 @@ handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,stateme
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
-    NewMsg = case Cmd of
+    {NewMsg, RowFun} = case Cmd of
         exec ->
             NewEvtPids = EvtPids,
             [_,MaxRows|_] = Rest,
-            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
+            {F, NewRest} = if length(Rest) > 2 ->
+                RevRest = lists:reverse(Rest),
+                RFn = case lists:nth(1, RevRest) of
+                    Fn when is_function(Fn) -> Fn;
+                    _ -> fun erlimem_buf:rfun/1
+                end,
+                {RFn, lists:reverse(lists:nthtail(1, RevRest))};
+            true -> {fun erlimem_buf:rfun/1, Rest}
+            end,
+            {list_to_tuple([Cmd,SeCo|NewRest] ++ [Schema]), F};
         subscribe ->
             MaxRows = 0,
             [Evt|_] = Rest,
             NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
-            list_to_tuple([Cmd,SeCo|Rest]);
+            {list_to_tuple([Cmd,SeCo|Rest]), fun erlimem_buf:rfun/1};
         _ ->
             NewEvtPids = EvtPids,
             MaxRows = 0,
-            list_to_tuple([Cmd,SeCo|Rest])
+            {list_to_tuple([Cmd,SeCo|Rest]), fun erlimem_buf:rfun/1}
     end,
     NewState = case erlimem_cmds:exec(NewMsg, Connection) of
         {ok, Clms, Fun, Ref} ->
@@ -173,7 +184,7 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
             State#state{statements=lists:keystore(Ref, 1, Stmts,
                             {Ref, #statement{ result  = {columns, Clms}
                                             , ref     = Ref
-                                            , buf     = erlimem_buf:create_buffer()
+                                            , buf     = erlimem_buf:create_buffer(RowFun)
                                             , maxrows = MaxRows
                                             , row_fun = Fun}
                             })
