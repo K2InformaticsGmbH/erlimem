@@ -16,10 +16,10 @@ exec_catch(Node, Mod, CmdTuple, IsSec) ->
     {Cmd, Args0} = lists:split(1, tuple_to_list(CmdTuple)),
     Fun = lists:nth(1, Cmd),
     Args = case {Fun, IsSec} of
-        {fetch_recs_async, false} -> lists:nthtail(1, Args0) ++ [self()];
-        {fetch_recs_async, _}     -> Args0 ++ [self(), IsSec];
-        {_, false}                -> lists:nthtail(1, Args0);
-        {_, _}                    -> Args0
+        {fetch_recs_async, false}       -> lists:nthtail(1, Args0) ++ [self()];
+        {fetch_recs_async, _}           -> Args0 ++ [self(), IsSec];
+        {_, false}                      -> lists:nthtail(1, Args0);
+        {_, _}                          -> Args0
     end,
     try
         Res = case Node of
@@ -31,7 +31,7 @@ exec_catch(Node, Mod, CmdTuple, IsSec) ->
             _ -> Res
         end
     catch
-        _Class:Result -> {error, Result}
+        _Class:Result -> {error, Result, erlang:get_stacktrace()}
     end.
 
 recv_msg(Bin) ->

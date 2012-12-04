@@ -25,7 +25,7 @@
         row_fun = fun(X) -> X end
     }).
 
-%% API
+%% session APIs
 -export([open/3
         , close/1
         , exec/2
@@ -33,12 +33,18 @@
         , exec/4
         , read_block/2
         , run_cmd/3
-        , start_async_read/1
-        , get_next/3
+		]).
+
+% statement APIs
+-export([start_async_read/1
         , get_buffer_max/1
         , rows_from/2
         , prev_rows/1
         , next_rows/1
+        , update_rows/2
+        , delete_rows/2
+        , insert_rows/2
+        , commit_modified/1
 		]).
 
 %% gen_server callbacks
@@ -63,12 +69,17 @@ exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr,
 exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
 read_block(StmtRef,                              Ctx) -> run_cmd(read_block, [StmtRef], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
-start_async_read(            {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {read_block_async, StmtRef}).
-get_next(Count, Cols,        {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_next, StmtRef, Count, Cols}).
 get_buffer_max(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {get_buffer_max, StmtRef}).
 rows_from(RowId,             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {rows_from, StmtRef, RowId}).
 prev_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {prev_rows, StmtRef}).
 next_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {next_rows, StmtRef}).
+update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, upd, Rows, StmtRef}).
+delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
+insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
+commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
+start_async_read(            {?MODULE, StmtRef, Pid}) ->
+    ok = gen_server:call(Pid, {clear_buf, StmtRef}),
+    gen_server:cast(Pid, {read_block_async, StmtRef}).
 
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
@@ -100,17 +111,25 @@ connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined},
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
 handle_call(stop, _From, #state{statements=Stmts}=State) ->
-    _ = [erlimem_buf:delete_buffer(Buf) || #statement{buf=Buf} <- Stmts],
+    _ = [erlimem_buf:delete(Buf) || #statement{buf=Buf} <- Stmts],
     {stop,normal,State};
 handle_call({close_statement, StmtRef}, _From, #state{connection=Connection,seco=SeCo,statements=Stmts}=State) ->
     case lists:keytake(StmtRef, 1, Stmts) of
         {value, {StmtRef, #statement{buf=Buf}}, NewStmts} ->
-            erlimem_buf:delete_buffer(Buf),
+            erlimem_buf:delete(Buf),
             erlimem_cmds:exec({close, SeCo, StmtRef}, Connection);
         false -> NewStmts = Stmts
     end,
     {reply,ok,State#state{statements=NewStmts}};
 
+handle_call({clear_buf, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    NewBuf = erlimem_buf:clear(Buf),
+    NewStmts = lists:keyreplace(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,ok,State#state{idle_timer=NewTimer,statements=NewStmts}};
 handle_call({get_buffer_max, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
@@ -122,7 +141,7 @@ handle_call({rows_from, Ref, RowId}, _From, #state{idle_timer=Timer,statements=S
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
     #statement{buf=Buf, maxrows=MaxRows} = Stmt,
-    {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows, []),
+    {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
@@ -130,7 +149,7 @@ handle_call({prev_rows, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} =
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
     #statement{buf=Buf, maxrows=MaxRows} = Stmt,
-    {Rows, NewBuf} = erlimem_buf:get_prev_rows(Buf, MaxRows, []),
+    {Rows, NewBuf} = erlimem_buf:get_prev_rows(Buf, MaxRows),
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
@@ -138,19 +157,29 @@ handle_call({next_rows, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} =
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
     #statement{buf=Buf, maxrows=MaxRows} = Stmt,
-    {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows, []),
+    {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
     NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
-
-handle_call({get_next, Ref, Count, Cols}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
+handle_call({modify_rows, Op, Rows, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
     #statement{buf=Buf} = Stmt,
-    {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, Count, Cols),
-    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#statement{buf=NewBuf}}),
+    erlimem_buf:modify_rows(Buf, Op, Rows),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Rows,State#state{idle_timer=NewTimer,statements=NewStmts}};
+    {reply,ok,State#state{idle_timer=NewTimer}};
+handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,statements=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    Rows = erlimem_buf:get_modified_rows(Buf),
+    ok = erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
+    ok = erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
+    ok = erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Rows,State#state{idle_timer=NewTimer}};
+
+
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
@@ -184,7 +213,7 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
             State#state{statements=lists:keystore(Ref, 1, Stmts,
                             {Ref, #statement{ result  = {columns, Clms}
                                             , ref     = Ref
-                                            , buf     = erlimem_buf:create_buffer(RowFun)
+                                            , buf     = erlimem_buf:create(RowFun)
                                             , maxrows = MaxRows
                                             , row_fun = Fun}
                             })
@@ -200,6 +229,7 @@ handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements
     {_, #statement{buf=Buffer, row_fun=Fun}} = lists:keyfind(StmtRef, 1, Stmts),
     case erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection) of
         {ok, []} -> {noreply, State};
+        {error, Result} -> io:format(user, "erlimem - async row fetch error ~p~n", [Result]);
         {Rows, _Complete} ->
             erlimem_buf:insert_rows(Buffer, [Fun(R) || R <- Rows]),
             gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
@@ -260,7 +290,9 @@ setup(Type) ->
     Password = erlang:md5(<<"change_on_install">>),
     Cred = {User, Password},
     erlimem:start(),
-    Schema = if ((Type =:= local) orelse (Type =:= local_sec)) ->
+    ImemRunning = lists:keymember(imem, 1, application:which_applications()),
+    Schema =
+    if ((Type =:= local) orelse (Type =:= local_sec)) andalso (ImemRunning == false) ->
             application:load(imem),
             {ok, S} = application:get_env(imem, mnesia_schema_name),
             {ok, Cwd} = file:get_cwd(),
@@ -279,6 +311,7 @@ setup(Type) ->
     end.
 
 setup() ->
+    random:seed(erlang:now()),
     setup(local).
 
 teardown(_Sess) ->
@@ -292,46 +325,87 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-                fun tcp_all_tables/1
-                , fun tcp_table_craete_select_drop/1
+                fun table_modify/1
+                %fun all_tables/1
+                %, fun table_create_select_drop/1
+                %, fun table_modify/1
         ]}
         }
     }.
 
-tcp_table_craete_select_drop(Sess) ->
-    Schema = "Imem",
+all_tables(Sess) ->
+    io:format(user, "--------- select from all_tables ---------------~n", []),
+    {ok, Clms, Statement} = Sess:exec("select qname from all_tables;", 100),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
+    Statement:start_async_read(),
+    timer:sleep(1000),
+    io:format(user, "receiving...~n", []),
+    Rows = Statement:next_rows(),
+    io:format(user, "received ~p~n", [Rows]),
+    Statement:close(),
+    io:format(user, "statement closed~n", []),
+    io:format(user, "------------------------------------------------~n", []).
+
+table_create_select_drop(Sess) ->
+    io:format(user, "-------- create insert select drop -------------~n", []),
     Table = def,
-    io:format(user, "got schema ~p~n", [Schema]),
     Res = Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
     Res1 = Sess:run_cmd(subscribe, [{table,Table,simple}]),
     io:format(user, "subscribe ~p~n", [Res1]),
     % - {error, Result} = Sess:exec("create table Table (col1 int, col2 char);"),
     % - io:format(user, "Duplicate Create ~p~n", [Result]),
-    Res0 = insert_range(Sess, 210, atom_to_list(Table)),
+    Res0 = insert_range(Sess, 20, atom_to_list(Table)),
     io:format(user, "insert ~p~n", [Res0]),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
-    {Rows,_,_} = Statement:get_next(100, []),
+    {Rows,_,_} = Statement:next_rows(),
     Statement:close(),
     io:format(user, "statement closed~n", []),
     io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
-    io:format(user, "drop table~n", []).
+    io:format(user, "drop table~n", []),
+    io:format(user, "------------------------------------------------~n", []).
 
-tcp_all_tables(Sess) ->
-    {ok, Clms, Statement} = Sess:exec("select qname from all_tables;", 100),
-    io:format(user, "select ~p~n", [{Clms, Statement}]),
+table_modify(Sess) ->
+    io:format(user, "-------- update insert new delete rows ---------~n", []),
+    Table = def,
+    Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
+    NumRows = 10,
+    insert_range(Sess, NumRows, atom_to_list(Table)),
+    {ok, _, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
     Statement:start_async_read(),
     timer:sleep(1000),
-    io:format(user, "receiving...~n", []),
-    Rows = Statement:get_next(100, []),
-    io:format(user, "received ~p~n", [Rows]),
+    {Rows,_,_} = Statement:next_rows(),
+    io:format(user, "original table from db ~p~n", [Rows]),
+    Statement:update_rows(update_random(NumRows,5,Rows)), % modify some rows in buffer
+    Statement:delete_rows(update_random(NumRows,5,Rows)), % delete some rows in buffer
+    Statement:insert_rows(insert_random(NumRows,5,[])),   % insert some rows in buffer
+    Rows9 = Statement:commit_modified(),
+    io:format(user, "changed rows ~p~n", [Rows9]),
+    Statement:start_async_read(),
+    timer:sleep(1000),
+    {NewRows1,_,_} = Statement:next_rows(),
+    io:format(user, "modified table from db ~p~n", [NewRows1]),
     Statement:close(),
-    io:format(user, "statement closed~n", []).
+    ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
+    io:format(user, "------------------------------------------------~n", []).
+
+insert_random(_, 0, Rows) -> Rows;
+insert_random(Max, Count, Rows) ->
+    Idx = random:uniform(Max),
+    insert_random(Max, Count-1, [[Idx, Idx]|Rows]).
+
+update_random(Max, Count, Rows) -> update_random(Max, Count, Rows, []).
+update_random(_, 0, _, NewRows) -> NewRows;
+update_random(Max, Count, Rows, NewRows) ->
+    Idx = random:uniform(Max),
+    {_, B} = lists:split(Idx-1, Rows),
+    {[[I,K,_]],_} = lists:split(1, B),
+    update_random(Max, Count-1, Rows, NewRows ++ [[I,K,Idx]]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
