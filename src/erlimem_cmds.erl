@@ -23,7 +23,8 @@ exec_catch(Node, Mod, CmdTuple, IsSec) ->
     end,
     try
         Res = case Node of
-            Node when Node =:= node() -> apply(Mod, Fun, Args);
+            Node when Node =:= node() ->
+                apply(Mod, Fun, Args);
             _ -> rpc:call(Node, Mod, Fun, Args)
         end,
         case Fun of

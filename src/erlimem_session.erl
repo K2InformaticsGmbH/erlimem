@@ -22,7 +22,7 @@
         ref,
         result,
         maxrows,
-        row_fun = fun(X) -> X end
+        viewfun
     }).
 
 %% session APIs
@@ -179,43 +179,32 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer}};
 
-
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
-    {NewMsg, RowFun} = case Cmd of
+    NewMsg = case Cmd of
         exec ->
             NewEvtPids = EvtPids,
             [_,MaxRows|_] = Rest,
-            {F, NewRest} = if length(Rest) > 2 ->
-                RevRest = lists:reverse(Rest),
-                RFn = case lists:nth(1, RevRest) of
-                    Fn when is_function(Fn) -> Fn;
-                    _ -> fun erlimem_buf:rfun/1
-                end,
-                {RFn, lists:reverse(lists:nthtail(1, RevRest))};
-            true -> {fun erlimem_buf:rfun/1, Rest}
-            end,
-            {list_to_tuple([Cmd,SeCo|NewRest] ++ [Schema]), F};
+            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
         subscribe ->
             MaxRows = 0,
             [Evt|_] = Rest,
             NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
-            {list_to_tuple([Cmd,SeCo|Rest]), fun erlimem_buf:rfun/1};
+            list_to_tuple([Cmd,SeCo|Rest]);
         _ ->
             NewEvtPids = EvtPids,
             MaxRows = 0,
-            {list_to_tuple([Cmd,SeCo|Rest]), fun erlimem_buf:rfun/1}
+            list_to_tuple([Cmd,SeCo|Rest])
     end,
     NewState = case erlimem_cmds:exec(NewMsg, Connection) of
         {ok, Clms, Fun, Ref} ->
             Result = {ok, Clms, {?MODULE, Ref, self()}},
             State#state{statements=lists:keystore(Ref, 1, Stmts,
-                            {Ref, #statement{ result  = {columns, Clms}
-                                            , ref     = Ref
-                                            , buf     = erlimem_buf:create(RowFun)
-                                            , maxrows = MaxRows
-                                            , row_fun = Fun}
+                            {Ref, #statement{ result   = {columns, Clms}
+                                            , ref      = Ref
+                                            , buf      = erlimem_buf:create(Fun)
+                                            , maxrows  = MaxRows}
                             })
                        };
         Res ->
@@ -226,12 +215,12 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
 
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
-    {_, #statement{buf=Buffer, row_fun=Fun}} = lists:keyfind(StmtRef, 1, Stmts),
+    {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
     case erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection) of
         {ok, []} -> {noreply, State};
         {error, Result} -> io:format(user, "erlimem - async row fetch error ~p~n", [Result]);
         {Rows, _Complete} ->
-            erlimem_buf:insert_rows(Buffer, [Fun(R) || R <- Rows]),
+            erlimem_buf:insert_rows(Buffer, Rows), % [Fun(R) || R <- Rows]
             gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
             {noreply, State}
     end;
@@ -325,10 +314,9 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-                fun table_modify/1
-                %fun all_tables/1
-                %, fun table_create_select_drop/1
-                %, fun table_modify/1
+                fun all_tables/1
+%                , fun table_create_select_drop/1
+%                , fun table_modify/1
         ]}
         }
     }.
@@ -340,7 +328,7 @@ all_tables(Sess) ->
     Statement:start_async_read(),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
-    Rows = Statement:next_rows(),
+    {Rows,_,_} = Statement:next_rows(),
     io:format(user, "received ~p~n", [Rows]),
     Statement:close(),
     io:format(user, "statement closed~n", []),
@@ -382,8 +370,11 @@ table_modify(Sess) ->
     {Rows,_,_} = Statement:next_rows(),
     io:format(user, "original table from db ~p~n", [Rows]),
     Statement:update_rows(update_random(NumRows,5,Rows)), % modify some rows in buffer
+    io:format(user, "updated rows ~p~n", [5]),
     Statement:delete_rows(update_random(NumRows,5,Rows)), % delete some rows in buffer
+    io:format(user, "deleted rows ~p~n", [5]),
     Statement:insert_rows(insert_random(NumRows,5,[])),   % insert some rows in buffer
+    io:format(user, "inserted rows ~p~n", [5]),
     Rows9 = Statement:commit_modified(),
     io:format(user, "changed rows ~p~n", [Rows9]),
     Statement:start_async_read(),
@@ -404,8 +395,8 @@ update_random(_, 0, _, NewRows) -> NewRows;
 update_random(Max, Count, Rows, NewRows) ->
     Idx = random:uniform(Max),
     {_, B} = lists:split(Idx-1, Rows),
-    {[[I,K,_]],_} = lists:split(1, B),
-    update_random(Max, Count-1, Rows, NewRows ++ [[I,K,Idx]]).
+    [I,K,PK,_|Rest] = lists:nth(1, B),
+    update_random(Max, Count-1, Rows, NewRows ++ [[I,K,PK,Idx|Rest]]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
