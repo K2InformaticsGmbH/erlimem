@@ -42,6 +42,9 @@
         , prev_rows/1
         , next_rows/1
         , update_rows/2
+        , update_row/4
+        , delete_row/2
+        , insert_row/2
         , delete_rows/2
         , insert_rows/2
         , commit_modified/1
@@ -73,6 +76,9 @@ get_buffer_max(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {g
 rows_from(RowId,             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {rows_from, StmtRef, RowId}).
 prev_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {prev_rows, StmtRef}).
 next_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {next_rows, StmtRef}).
+update_row(RId, CId, Val,    {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {update_row, RId, CId, Val, StmtRef}).
+delete_row(RId,              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {delete_row, RId, StmtRef}).
+insert_row(Row,              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {insert_row, Row, StmtRef}).
 update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, upd, Rows, StmtRef}).
 delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
@@ -121,6 +127,27 @@ handle_call({close_statement, StmtRef}, _From, #state{connection=Connection,seco
         false -> NewStmts = Stmts
     end,
     {reply,ok,State#state{statements=NewStmts}};
+
+handle_call({update_row, RowId, ColumId, Val, Ref}, From, #state{statements=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
+    NewRow = lists:sublist(Row,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,Row),
+    handle_call({modify_rows, upd, [NewRow], Ref}, From, State);
+handle_call({delete_row, RowId, Ref}, _From, #state{statements=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {[Row], _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
+    %handle_call({modify_rows, del, [Row], Ref}, From, State);
+    io:format(user, "delete_row ~p~n", [Row]),
+    {reply,ok,State};
+handle_call({insert_row, Row, Ref}, _From, #state{statements=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {[_SampleRow], _} = erlimem_buf:get_rows_from(Buf, 1, 1),
+    io:format(user, "insert_row ~p~n", [Row]),
+    %handle_call({modify_rows, ins, Rows, Ref}, From, State);
+    {reply,ok,State};
 
 handle_call({clear_buf, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
     erlang:cancel_timer(Timer),
@@ -173,9 +200,9 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #statement{buf=Buf} = Stmt,
     Rows = erlimem_buf:get_modified_rows(Buf),
-    ok = erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
-    ok = erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
-    ok = erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
+    print_error(erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection)),
+    print_error(erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection)),
+    print_error(erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection)),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer}};
 
@@ -213,6 +240,9 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
+
+print_error(ok) -> ok;
+print_error(Error) -> io:format(user, "[ERROR] ~p~n", [Error]), Error.
 
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
     {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
@@ -285,12 +315,12 @@ setup(Type) ->
             application:load(imem),
             {ok, S} = application:get_env(imem, mnesia_schema_name),
             {ok, Cwd} = file:get_cwd(),
-            NewSchema = Cwd ++ "/../" ++ S,
-            application:set_env(imem, mnesia_schema_name, NewSchema),
+            NewSchema = Cwd ++ "/../" ++ atom_to_list(S),
+            application:set_env(mnesia, dir, NewSchema),
             application:set_env(imem, mnesia_node_type, ram),
             application:start(imem),
             S;
-        true -> "Imem"
+        true -> 'Imem'
     end,
     io:format(user, "schema ~p~n", [Schema]),
     case Type of
@@ -314,9 +344,9 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-                fun all_tables/1
-%                , fun table_create_select_drop/1
-%                , fun table_modify/1
+                %fun all_tables/1
+                %, fun table_create_select_drop/1
+                 fun table_modify/1
         ]}
         }
     }.
@@ -390,13 +420,13 @@ insert_random(Max, Count, Rows) ->
     Idx = random:uniform(Max),
     insert_random(Max, Count-1, [[Idx, Idx]|Rows]).
 
-update_random(Max, Count, Rows) -> update_random(Max, Count, Rows, []).
+update_random(Max, Count, Rows) -> update_random(Max-1, Count, Rows, []).
 update_random(_, 0, _, NewRows) -> NewRows;
 update_random(Max, Count, Rows, NewRows) ->
     Idx = random:uniform(Max),
     {_, B} = lists:split(Idx-1, Rows),
-    [I,K,PK,_|Rest] = lists:nth(1, B),
-    update_random(Max, Count-1, Rows, NewRows ++ [[I,K,PK,Idx|Rest]]).
+    [I,PK,_|Rest] = lists:nth(1,B),
+    update_random(Max, Count-1, Rows, NewRows ++ [[I,PK,Idx|Rest]]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->

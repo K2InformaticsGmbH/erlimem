@@ -39,7 +39,7 @@ modify_rows(Buf, ins, Rows) -> insert_new_rows(Buf, Rows);
 modify_rows(#buffer{tableid=TableId}, Op, Rows) when is_atom(Op) ->
     ExistingRows = [ets:lookup(TableId, list_to_integer(I)) || [I|_] <- Rows],
     NewRows = apply_op(Op, ExistingRows, Rows, []),
-io:format(user, "modify_rows ~p~n", [NewRows]),
+%io:format(user, "modify_rows from ~p~nto ~p~nwith ~p~n", [ExistingRows,NewRows,Rows]),
     ets:insert(TableId, [list_to_tuple(R)||R<-NewRows]).
 
 apply_op(Op, [_|_] = ExistingRows, [F|_] = NewRows, []) when is_list(F)->
@@ -48,7 +48,7 @@ apply_op(_,[],[],ModifiedRows) -> ModifiedRows;
 apply_op(Op,[[Er|_] | ExistingRows],NewRows,ModifiedRows) when is_atom(Op) ->
     {[I,_,K], R} = lists:split(3, tuple_to_list(Er)),
     {NewR, NewRows0} = case lists:keytake(I,1,NewRows) of
-        {value, V, NRs0} -> {[I, Op, K | lists:nthtail(2,tuple_to_list(V))], NRs0};
+        {value, V, NRs0} -> {[I, Op, K | lists:nthtail(1,tuple_to_list(V))], NRs0};
         false -> {[I, Op, K | R], NewRows}
     end,
     apply_op(Op, ExistingRows, NewRows0, ModifiedRows ++ [NewR]).
