@@ -89,12 +89,11 @@ init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) -
         {ok, Connect, Schema} ->
             io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
             Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            case Connect of
-                {local, _} ->
-                    SeCo = undefined;
+            SeCo =  case Connect of
+                {local, _} -> undefined;
                 _ ->
-                    SeCo = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
-                    SeCo = erlimem_cmds:exec({login,SeCo}, Connect)
+                    S = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
+                    erlimem_cmds:exec({login,S}, Connect)
             end,
             {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}};
         {error, Reason} -> {stop, Reason}
@@ -173,11 +172,12 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #statement{buf=Buf} = Stmt,
     Rows = erlimem_buf:get_modified_rows(Buf),
+io:format(user, "modified rows ~p~n", [Rows]),
     ok = erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
     ok = erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
     ok = erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Rows,State#state{idle_timer=NewTimer}};
+    {reply,ok,State#state{idle_timer=NewTimer}};
 
 
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
@@ -286,6 +286,10 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 -include_lib("eunit/include/eunit.hrl").
 
 setup(Type) -> 
+    dbg:start(),
+    dbg:tracer(),
+    dbg:tpl(erlimem_cmd, []),
+    dbg:p(all, c),
     User = <<"admin">>,
     Password = erlang:md5(<<"change_on_install">>),
     Cred = {User, Password},
@@ -296,12 +300,12 @@ setup(Type) ->
             application:load(imem),
             {ok, S} = application:get_env(imem, mnesia_schema_name),
             {ok, Cwd} = file:get_cwd(),
-            NewSchema = Cwd ++ "/../" ++ S,
-            application:set_env(imem, mnesia_schema_name, NewSchema),
+            NewSchema = Cwd ++ "/../" ++ atom_to_list(S),
+            application:set_env(mnesia, dir, NewSchema),
             application:set_env(imem, mnesia_node_type, ram),
             application:start(imem),
             S;
-        true -> "Imem"
+        true -> 'Imem'
     end,
     io:format(user, "schema ~p~n", [Schema]),
     case Type of
@@ -325,29 +329,28 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-                fun table_modify/1
-                %fun all_tables/1
-                %, fun table_create_select_drop/1
-                %, fun table_modify/1
+                fun all_tables/1
+                , fun table_create_select_drop/1
+                , fun table_modify/1
         ]}
         }
     }.
 
 all_tables(Sess) ->
-    io:format(user, "--------- select from all_tables ---------------~n", []),
+    io:format(user, "--------- select from all_tables (all_tables) ---------------~n", []),
     {ok, Clms, Statement} = Sess:exec("select qname from all_tables;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
-    timer:sleep(1000),
     io:format(user, "receiving...~n", []),
+    timer:sleep(1000),
     Rows = Statement:next_rows(),
     io:format(user, "received ~p~n", [Rows]),
     Statement:close(),
     io:format(user, "statement closed~n", []),
-    io:format(user, "------------------------------------------------~n", []).
+    io:format(user, "------------------------------------------------------------~n", []).
 
 table_create_select_drop(Sess) ->
-    io:format(user, "-------- create insert select drop -------------~n", []),
+    io:format(user, "-- create insert select drop (table_create_select_drop) ----~n", []),
     Table = def,
     Res = Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
     io:format(user, "Create ~p~n", [Res]),
@@ -368,10 +371,10 @@ table_create_select_drop(Sess) ->
     io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
     io:format(user, "drop table~n", []),
-    io:format(user, "------------------------------------------------~n", []).
+    io:format(user, "------------------------------------------------------------~n", []).
 
 table_modify(Sess) ->
-    io:format(user, "-------- update insert new delete rows ---------~n", []),
+    io:format(user, "------- update insert new delete rows (table_modify) -------~n", []),
     Table = def,
     Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
     NumRows = 10,
@@ -381,9 +384,9 @@ table_modify(Sess) ->
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
     io:format(user, "original table from db ~p~n", [Rows]),
-    Statement:update_rows(update_random(NumRows,5,Rows)), % modify some rows in buffer
-    Statement:delete_rows(update_random(NumRows,5,Rows)), % delete some rows in buffer
-    Statement:insert_rows(insert_random(NumRows,5,[])),   % insert some rows in buffer
+    Statement:update_rows(update_random(length(Rows)-1,5,Rows)), % modify some rows in buffer
+    Statement:delete_rows(update_random(length(Rows)-1,5,Rows)), % delete some rows in buffer
+    Statement:insert_rows(insert_random(length(Rows)-1,5,[])),   % insert some rows in buffer
     Rows9 = Statement:commit_modified(),
     io:format(user, "changed rows ~p~n", [Rows9]),
     Statement:start_async_read(),
@@ -392,11 +395,11 @@ table_modify(Sess) ->
     io:format(user, "modified table from db ~p~n", [NewRows1]),
     Statement:close(),
     ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
-    io:format(user, "------------------------------------------------~n", []).
+    io:format(user, "------------------------------------------------------------~n", []).
 
 insert_random(_, 0, Rows) -> Rows;
 insert_random(Max, Count, Rows) ->
-    Idx = random:uniform(Max),
+    Idx = Max + random:uniform(Max),
     insert_random(Max, Count-1, [[Idx, Idx]|Rows]).
 
 update_random(Max, Count, Rows) -> update_random(Max, Count, Rows, []).
