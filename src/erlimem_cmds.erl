@@ -43,20 +43,6 @@ recv_msg() ->
         Data -> Data
     end.
 
-% recv_msg(Bin) ->
-%     receive
-%         Pkt when is_binary(Pkt) ->
-%             NewBin = << Bin/binary, Pkt/binary >>,
-%             case (catch binary_to_term(NewBin)) of
-%                 {'EXIT', _Reason} ->
-%                     io:format(user, "term incomplete, received ~p bytes waiting...~n", [byte_size(Pkt)]),
-%                     recv_msg(NewBin);
-%                 Data ->
-% io:format(user, "Got ~p~n", [Data]),
-% Data
-%             end
-%     end.
-
 recv_tcp(Sock, Bin) ->
     case gen_tcp:recv(Sock, 0) of
         {ok, Pkt} ->

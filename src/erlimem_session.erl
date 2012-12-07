@@ -22,7 +22,7 @@
         ref,
         result,
         maxrows,
-        row_fun = fun(X) -> X end
+        viewfun
     }).
 
 %% session APIs
@@ -42,6 +42,9 @@
         , prev_rows/1
         , next_rows/1
         , update_rows/2
+        , update_row/4
+        , delete_row/2
+        , insert_row/2
         , delete_rows/2
         , insert_rows/2
         , commit_modified/1
@@ -73,6 +76,9 @@ get_buffer_max(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {g
 rows_from(RowId,             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {rows_from, StmtRef, RowId}).
 prev_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {prev_rows, StmtRef}).
 next_rows(                   {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {next_rows, StmtRef}).
+update_row(RId, CId, Val,    {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {update_row, RId, CId, Val, StmtRef}).
+delete_row(RId,              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {delete_row, RId, StmtRef}).
+insert_row(Row,              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {insert_row, Row, StmtRef}).
 update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, upd, Rows, StmtRef}).
 delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
@@ -120,6 +126,27 @@ handle_call({close_statement, StmtRef}, _From, #state{connection=Connection,seco
         false -> NewStmts = Stmts
     end,
     {reply,ok,State#state{statements=NewStmts}};
+
+handle_call({update_row, RowId, ColumId, Val, Ref}, From, #state{statements=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
+    NewRow = lists:sublist(Row,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,Row),
+    handle_call({modify_rows, upd, [NewRow], Ref}, From, State);
+handle_call({delete_row, RowId, Ref}, _From, #state{statements=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {[Row], _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
+    %handle_call({modify_rows, del, [Row], Ref}, From, State);
+    io:format(user, "delete_row ~p~n", [Row]),
+    {reply,ok,State};
+handle_call({insert_row, Row, Ref}, _From, #state{statements=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    #statement{buf=Buf} = Stmt,
+    {[_SampleRow], _} = erlimem_buf:get_rows_from(Buf, 1, 1),
+    io:format(user, "insert_row ~p~n", [Row]),
+    %handle_call({modify_rows, ins, Rows, Ref}, From, State);
+    {reply,ok,State};
 
 handle_call({clear_buf, Ref}, _From, #state{idle_timer=Timer,statements=Stmts} = State) ->
     erlang:cancel_timer(Timer),
@@ -172,50 +199,38 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #statement{buf=Buf} = Stmt,
     Rows = erlimem_buf:get_modified_rows(Buf),
-io:format(user, "modified rows ~p~n", [Rows]),
-    ok = erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
-    ok = erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
-    ok = erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
+    print_error(erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection)),
+    print_error(erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection)),
+    print_error(erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection)),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,ok,State#state{idle_timer=NewTimer}};
-
+    {reply,Rows,State#state{idle_timer=NewTimer}};
 
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
-    {NewMsg, RowFun} = case Cmd of
+    NewMsg = case Cmd of
         exec ->
             NewEvtPids = EvtPids,
             [_,MaxRows|_] = Rest,
-            {F, NewRest} = if length(Rest) > 2 ->
-                RevRest = lists:reverse(Rest),
-                RFn = case lists:nth(1, RevRest) of
-                    Fn when is_function(Fn) -> Fn;
-                    _ -> fun erlimem_buf:rfun/1
-                end,
-                {RFn, lists:reverse(lists:nthtail(1, RevRest))};
-            true -> {fun erlimem_buf:rfun/1, Rest}
-            end,
-            {list_to_tuple([Cmd,SeCo|NewRest] ++ [Schema]), F};
+            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
         subscribe ->
             MaxRows = 0,
             [Evt|_] = Rest,
             NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
-            {list_to_tuple([Cmd,SeCo|Rest]), fun erlimem_buf:rfun/1};
+            list_to_tuple([Cmd,SeCo|Rest]);
         _ ->
             NewEvtPids = EvtPids,
             MaxRows = 0,
-            {list_to_tuple([Cmd,SeCo|Rest]), fun erlimem_buf:rfun/1}
+            list_to_tuple([Cmd,SeCo|Rest])
     end,
     NewState = case erlimem_cmds:exec(NewMsg, Connection) of
         {ok, Clms, Fun, Ref} ->
             Result = {ok, Clms, {?MODULE, Ref, self()}},
             State#state{statements=lists:keystore(Ref, 1, Stmts,
-                            {Ref, #statement{ result  = {columns, Clms}
-                                            , ref     = Ref
-                                            , buf     = erlimem_buf:create(RowFun)
-                                            , maxrows = MaxRows
-                                            , row_fun = Fun}
+                            {Ref, #statement{ result   = {columns, Clms}
+                                            , ref      = Ref
+                                            , buf      = erlimem_buf:create(Fun)
+                                            , maxrows  = MaxRows}
                             })
                        };
         Res ->
@@ -225,13 +240,16 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statem
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
 
+print_error(ok) -> ok;
+print_error(Error) -> io:format(user, "[ERROR] ~p~n", [Error]), Error.
+
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,statements=Stmts, seco=SeCo}=State) ->    
-    {_, #statement{buf=Buffer, row_fun=Fun}} = lists:keyfind(StmtRef, 1, Stmts),
+    {_, #statement{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
     case erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection) of
         {ok, []} -> {noreply, State};
         {error, Result} -> io:format(user, "erlimem - async row fetch error ~p~n", [Result]);
         {Rows, _Complete} ->
-            erlimem_buf:insert_rows(Buffer, [Fun(R) || R <- Rows]),
+            erlimem_buf:insert_rows(Buffer, Rows), % [Fun(R) || R <- Rows]
             gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
             {noreply, State}
     end;
@@ -343,7 +361,7 @@ all_tables(Sess) ->
     Statement:start_async_read(),
     io:format(user, "receiving...~n", []),
     timer:sleep(1000),
-    Rows = Statement:next_rows(),
+    {Rows,_,_} = Statement:next_rows(),
     io:format(user, "received ~p~n", [Rows]),
     Statement:close(),
     io:format(user, "statement closed~n", []),
@@ -402,13 +420,13 @@ insert_random(Max, Count, Rows) ->
     Idx = Max + random:uniform(Max),
     insert_random(Max, Count-1, [[Idx, Idx]|Rows]).
 
-update_random(Max, Count, Rows) -> update_random(Max, Count, Rows, []).
+update_random(Max, Count, Rows) -> update_random(Max-1, Count, Rows, []).
 update_random(_, 0, _, NewRows) -> NewRows;
 update_random(Max, Count, Rows, NewRows) ->
     Idx = random:uniform(Max),
     {_, B} = lists:split(Idx-1, Rows),
-    {[[I,K,_]],_} = lists:split(1, B),
-    update_random(Max, Count-1, Rows, NewRows ++ [[I,K,Idx]]).
+    [I,PK,_|Rest] = lists:nth(1,B),
+    update_random(Max, Count-1, Rows, NewRows ++ [[I,PK,Idx|Rest]]).
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->

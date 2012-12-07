@@ -21,9 +21,9 @@
         , rfun/1
         ]).
 
-create(Fun) ->
+create(RowFun) ->
     #buffer{tableid=ets:new(results, [ordered_set, public])
-           , rowfun = Fun
+           , rowfun = RowFun
     }.
 
 clear(#buffer{tableid=Tab} = Buf) ->
@@ -39,6 +39,7 @@ modify_rows(Buf, ins, Rows) -> insert_new_rows(Buf, Rows);
 modify_rows(#buffer{tableid=TableId}, Op, Rows) when is_atom(Op) ->
     ExistingRows = [ets:lookup(TableId, list_to_integer(I)) || [I|_] <- Rows],
     NewRows = apply_op(Op, ExistingRows, Rows, []),
+%io:format(user, "modify_rows from ~p~nto ~p~nwith ~p~n", [ExistingRows,NewRows,Rows]),
     ets:insert(TableId, [list_to_tuple(R)||R<-NewRows]).
 
 apply_op(Op, [_|_] = ExistingRows, [F|_] = NewRows, []) when is_list(F)->
@@ -55,7 +56,7 @@ apply_op(Op,[[Er|_] | ExistingRows],NewRows,ModifiedRows) when is_atom(Op) ->
 insert_rows(#buffer{tableid=TableId}, Rows) ->
     NrOfRows = length(Rows),
     CacheSize = ets:info(TableId, size),
-    ets:insert(TableId, [list_to_tuple([I,nop|R])||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), Rows)]).
+    ets:insert(TableId, [list_to_tuple([I,nop|[R]])||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), Rows)]).
 
 insert_new_rows(#buffer{tableid=TableId}, Rows) ->
     NrOfRows = length(Rows),
@@ -70,9 +71,9 @@ get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd, rowfun=F, tableid
     Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
     NewRows = lists:foldl(  fun
                                 ([I,Op,RK],Rws) when is_integer(I) ->
-                                    R0 = F(RK),
-                                    ets:insert(TableId, list_to_tuple([I, Op, RK | R0])),
-                                    Rws ++ [[integer_to_list(I)|R0]];
+                                    [K|Rest] = F(RK),
+                                    ets:insert(TableId, list_to_tuple([I, Op, K | Rest])),
+                                    Rws ++ [[integer_to_list(I)|Rest]];
                                 ([I,_Op,_RK|Rest],Rws) when is_integer(I) ->
                                     Rws ++ [[integer_to_list(I)|Rest]]
                             end
