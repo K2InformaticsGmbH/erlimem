@@ -51,9 +51,9 @@ recv_tcp(Sock, Bin) ->
             {'EXIT', _Reason} ->
                 io:format(user, "term incomplete, received ~p bytes waiting...~n", [byte_size(Pkt)]),
                 recv_tcp(Sock, NewBin);
-            Data ->
-                %io:format(user, "Got ~p~n", [Data]),
-                Data
+            Term ->
+                %io:format(user, "Got ~p~n", [Term]),
+                Term
         end;
     {error, Reason} ->
         throw({error, {"TCP receive error", Reason}})

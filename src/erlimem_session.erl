@@ -334,7 +334,7 @@ setup(Type) ->
 
 setup() ->
     random:seed(erlang:now()),
-    setup(local).
+    setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
