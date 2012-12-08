@@ -98,6 +98,7 @@ init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) -
             SeCo =  case Connect of
                 {local, _} -> undefined;
                 _ ->
+io:format(user, "loggin in with ~p~n", [{User, {pwdmd5, Password}}]),
                     S = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
                     erlimem_cmds:exec({login,S}, Connect)
             end,
@@ -106,6 +107,7 @@ init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) -
     end.
 
 connect(tcp, {IpAddr, Port, Schema}) ->
+    io:format(user, "connecting ~p~n", [{IpAddr, Port, Schema}]),
     {ok, Ip} = inet:getaddr(IpAddr, inet),
     {ok, Socket} = gen_tcp:connect(Ip, Port, []),
     inet:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
@@ -133,17 +135,15 @@ handle_call({update_row, RowId, ColumId, Val, Ref}, From, #state{statements=Stmt
     {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
     NewRow = lists:sublist(Row,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,Row),
     handle_call({modify_rows, upd, [NewRow], Ref}, From, State);
-handle_call({delete_row, RowId, Ref}, _From, #state{statements=Stmts} = State) ->
+handle_call({delete_row, RowId, Ref}, From, #state{statements=Stmts} = State) ->
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
     #statement{buf=Buf} = Stmt,
-    {[Row], _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
-    %handle_call({modify_rows, del, [Row], Ref}, From, State);
-    io:format(user, "delete_row ~p~n", [Row]),
-    {reply,ok,State};
+    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
+    handle_call({modify_rows, del, [Row], Ref}, From, State);
 handle_call({insert_row, Row, Ref}, _From, #state{statements=Stmts} = State) ->
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
     #statement{buf=Buf} = Stmt,
-    {[_SampleRow], _} = erlimem_buf:get_rows_from(Buf, 1, 1),
+    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, 1, 1),
     io:format(user, "insert_row ~p~n", [Row]),
     %handle_call({modify_rows, ins, Rows, Ref}, From, State);
     {reply,ok,State};
@@ -203,6 +203,7 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     print_error(erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection)),
     print_error(erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection)),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    %io:format(user, "Modified rows ~p~n", [Rows]),
     {reply,Rows,State#state{idle_timer=NewTimer}};
 
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,statements=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
