@@ -46,10 +46,13 @@ apply_op(Op, [_|_] = ExistingRows, [F|_] = NewRows, []) when is_list(F)->
     apply_op(Op, ExistingRows, [list_to_tuple([list_to_integer(I)|R]) || [I|R]<-NewRows], []);
 apply_op(_,[],[],ModifiedRows) -> ModifiedRows;
 apply_op(Op,[[Er|_] | ExistingRows],NewRows,ModifiedRows) when is_atom(Op) ->
-    {[I,_,K], R} = lists:split(3, tuple_to_list(Er)),
+    {[I,_,K], R} = case lists:split(3, tuple_to_list(Er)) of
+        {[_,ins,_], _} = D -> NewOp = ins, D;
+        D ->              NewOp = Op, D
+    end,
     {NewR, NewRows0} = case lists:keytake(I,1,NewRows) of
-        {value, V, NRs0} -> {[I, Op, K | lists:nthtail(1,tuple_to_list(V))], NRs0};
-        false -> {[I, Op, K | R], NewRows}
+        {value, V, NRs0} -> {[I, NewOp, K | lists:nthtail(1,tuple_to_list(V))], NRs0};
+        false -> {[I, NewOp, K | R], NewRows}
     end,
     apply_op(Op, ExistingRows, NewRows0, ModifiedRows ++ [NewR]).
 
@@ -66,21 +69,24 @@ insert_new_rows(#buffer{tableid=TableId}, Rows) ->
 % TODO - complete state of the buffer (true/false) need to be determined
 get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd, rowfun=F, tableid=TableId}) ->
     CacheSize = ets:info(TableId, size),
-    [FirstRow] = ets:lookup(TableId, RowStart),
-    {MatchHead, MatchExpr} = build_match(size(FirstRow)),
-    Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
-    NewRows = lists:foldl(  fun
-                                ([I,Op,RK],Rws) when is_integer(I) ->
-                                    [K|Rest] = F(RK),
-                                    ets:insert(TableId, list_to_tuple([I, Op, K | Rest])),
-                                    Rws ++ [[integer_to_list(I)|Rest]];
-                                ([I,_Op,_RK|Rest],Rws) when is_integer(I) ->
-                                    Rws ++ [[integer_to_list(I)|Rest]]
-                            end
-                            , []
-                            , Rows
-                            ),
-    {NewRows, true, CacheSize}.
+    case ets:lookup(TableId, RowStart) of
+        [FirstRow] ->
+            {MatchHead, MatchExpr} = build_match(size(FirstRow)),
+            Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
+            NewRows = lists:foldl(  fun
+                                        ([I,Op,RK],Rws) when is_integer(I) ->
+                                            [K|Rest] = F(RK),
+                                            ets:insert(TableId, list_to_tuple([I, Op, K | Rest])),
+                                            Rws ++ [[integer_to_list(I)|Rest]];
+                                        ([I,_Op,_RK|Rest],Rws) when is_integer(I) ->
+                                            Rws ++ [[integer_to_list(I)|Rest]]
+                                    end
+                                    , []
+                                    , Rows
+                                    ),
+            {NewRows, true, CacheSize};
+        [] -> {[], true, CacheSize}
+    end.
 
 rfun(R) -> R.
     

@@ -146,11 +146,11 @@ handle_call({insert_row, Clm, Val, Ref}, From, #state{stmts=Stmts} = State) ->
     #drvstmt{buf=Buf, result={columns, Clms}} = Stmt,
     ColNameList = [atom_to_list(C#ddColMap.name)||C<-Clms],
     ColumId = string:str(ColNameList,[Clm]),
-    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, 1, 1),
-    NewRow = lists:sublist(Row,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,Row),
-    {reply,ok,NewStata} = handle_call({modify_rows, ins, [NewRow], Ref}, From, State),
+    Row = [C#ddColMap.default||C<-Clms],
+    NewRow = lists:sublist(Row,ColumId-1) ++ [Val] ++ lists:nthtail(ColumId,Row),
+    {reply,ok,NewState} = handle_call({modify_rows, ins, [NewRow], Ref}, From, State),
     {_,_,Count} = erlimem_buf:get_buffer_max(Buf),
-    {reply,Count,NewStata};
+    {reply,Count,NewState};
 
 handle_call({clear_buf, Ref}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
@@ -203,6 +203,7 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
     Rows = erlimem_buf:get_modified_rows(Buf),
+    io:format(user, "Modified rows ~p~n", [Rows]),
     Result =
     try
         erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
@@ -215,7 +216,6 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
             {error, Res}
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    %io:format(user, "Modified rows ~p~n", [Rows]),
     {reply,Result,State#state{idle_timer=NewTimer}};
 
 handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
@@ -252,9 +252,7 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=
                 {State, Res}
         end
     catch
-        _Class:ExcpRes ->
-            io:format(user, "[ERROR] ~p~n", [ExcpRes]),
-        {State, []}
+        _Class:ExcpRes -> {State, {error, ExcpRes}}
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
@@ -262,13 +260,14 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection,stmts=Stmts, seco=SeCo}=State) ->    
     {_, #drvstmt{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
     case erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection) of
-        {ok, []} -> {noreply, State};
+        {[], _} -> io:format(user, "fetch_recs_async no rows~n", []);
         {error, Result} -> io:format(user, "erlimem - async row fetch error ~p~n", [Result]);
         {Rows, _Complete} ->
             erlimem_buf:insert_rows(Buffer, Rows), % [Fun(R) || R <- Rows]
-            gen_server:cast(self(), {read_block_async, SeCo, StmtRef}),
-            {noreply, State}
-    end;
+            gen_server:cast(self(), {read_block_async, SeCo, StmtRef});
+        Unknown -> io:format(user, "Unknown resp for fetch_recs_async ~p~n", [Unknown])
+    end,
+    {noreply, State};
 handle_cast(_Request, State) ->
     {noreply, State}.
 
