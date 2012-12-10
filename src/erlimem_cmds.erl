@@ -35,7 +35,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
                 recv_tcp(Socket, <<>>)
         end
     catch
-        _Class:Result -> {error, Result, erlang:get_stacktrace()}
+        _Class:Result -> throw({Result, erlang:get_stacktrace()})
     end.
 
 recv_msg() ->
