@@ -54,7 +54,7 @@ recv_async(Sock, Bin) ->
             NewBin = << Bin/binary, Pkt/binary >>,
             case (catch binary_to_term(NewBin)) of
                 {'EXIT', _Reason} ->
-                    io:format(user, "term incomplete, received ~p bytes waiting...~n", [byte_size(Pkt)]),
+                    io:format(user, "term incomplete, received ~p bytes waiting for more...~n", [byte_size(Pkt)]),
                     recv_async(Sock, NewBin);
                 Term ->
                     gen_server:cast(Pid, {async_resp,  Term})
