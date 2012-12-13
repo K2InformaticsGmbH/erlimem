@@ -257,15 +257,18 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
 
-handle_cast({read_block_async, StmtRef}, #state{connection=Connection,stmts=Stmts, seco=SeCo}=State) ->    
+handle_cast({read_block_async, StmtRef}, #state{connection=Connection, seco=SeCo}=State) ->    
+    erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection),
+    {noreply, State};
+handle_cast({async_resp, {StmtRef, Resp}}, #state{stmts=Stmts, seco=SeCo}=State) ->
     {_, #drvstmt{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
-    case erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection) of
-        {[], _} -> io:format(user, "fetch_recs_async no rows~n", []);
-        {error, Result} -> io:format(user, "erlimem - async row fetch error ~p~n", [Result]);
+    case Resp of
+        {[], _} -> io:format(user, "async_resp~n", []);
+        {error, Result} -> io:format(user, "erlimem - async resp error ~p~n", [Result]);
         {Rows, _Complete} ->
             erlimem_buf:insert_rows(Buffer, Rows), % [Fun(R) || R <- Rows]
             gen_server:cast(self(), {read_block_async, SeCo, StmtRef});
-        Unknown -> io:format(user, "Unknown resp for fetch_recs_async ~p~n", [Unknown])
+        Unknown -> io:format(user, "Unknown resp for row fetch~p~n", [Unknown])
     end,
     {noreply, State};
 handle_cast(_Request, State) ->
