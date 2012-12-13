@@ -366,15 +366,15 @@ db_test_() ->
         fun teardown/1,
         {with, [
                 fun all_tables/1
-%                , fun table_create_select_drop/1
-%                , fun table_modify/1
+                , fun table_create_select_drop/1
+                , fun table_modify/1
         ]}
         }
     }.
 
 all_tables(Sess) ->
     io:format(user, "--------- select from all_tables (all_tables) ---------------~n", []),
-    {ok, Clms, Statement} = Sess:exec("select qname from all_tables;", 100),
+    {ok, Clms, Statement} = Sess:exec("select name(qname) from all_tables;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     io:format(user, "receiving...~n", []),
