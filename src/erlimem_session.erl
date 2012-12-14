@@ -62,8 +62,11 @@
 
 %% @doc open new session
 open(Type, Opts, Cred) ->
-    {ok, Pid} = gen_server:start(?MODULE, [Type, Opts, Cred], []),
-    {?MODULE, Pid}.
+    case gen_server:start(?MODULE, [Type, Opts, Cred], []) of
+        {ok, Pid} -> {?MODULE, Pid};
+        Other -> Other
+    end.
+
 
 close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
@@ -92,19 +95,26 @@ call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
 
 init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) ->
-    case connect(Type, Opts) of
-        {ok, Connect, Schema} ->
-            io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
-            Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            SeCo =  case Connect of
-                {local, _} -> undefined;
-                _ ->
-io:format(user, "loggin in with ~p~n", [{User, {pwdmd5, Password}}]),
-                    S = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
-                    erlimem_cmds:exec({login,S}, Connect)
-            end,
-            {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}};
-        {error, Reason} -> {stop, Reason}
+    try
+        case connect(Type, Opts) of
+            {ok, Connect, Schema} ->
+                io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
+                Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+                SeCo =  case Connect of
+                    {local, _} -> undefined;
+                    _ ->
+                        io:format(user, "authenticate with ~p~n", [{User, {pwdmd5, Password}}]),
+                        S = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
+                        io:format(user, "logging in for ~p~n", [User]),
+                        erlimem_cmds:exec({login,S}, Connect)
+                end,
+                {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}};
+            {error, Reason} -> {stop, Reason}
+        end
+    catch
+        _Class:{Result,ST} ->
+            io:format(user, "erlimem connect error ~p~n", [{Result, ST}]),
+            {stop, Result}
     end.
 
 connect(tcp, {IpAddr, Port, Schema}) ->
