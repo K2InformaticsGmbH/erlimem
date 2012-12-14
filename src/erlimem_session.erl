@@ -262,7 +262,9 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=
                 {State, Res}
         end
     catch
-        _Class:ExcpRes -> {State, {error, ExcpRes}}
+        _Class:{ExcpRes, ST} ->
+            %io:format(user, "error in command ~p - ~p~n", [ExcpRes, ST]),
+            {State, {error, ExcpRes}}
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
