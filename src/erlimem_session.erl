@@ -364,29 +364,75 @@ setup(Type) ->
 
 setup() ->
     random:seed(erlang:now()),
-    setup(local).
+    setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
     erlimem:stop(),
     application:stop(imem).
+setup_con() ->
+    erlimem:start(),
+    application:load(imem),
+    {ok, S} = application:get_env(imem, mnesia_schema_name),
+    {ok, Cwd} = file:get_cwd(),
+    NewSchema = Cwd ++ "/../" ++ atom_to_list(S),
+    application:set_env(mnesia, dir, NewSchema),
+    application:set_env(imem, mnesia_node_type, ram),
+    application:start(imem).
 
-db_test_() ->
+teardown_con(_) ->
+    erlimem:stop(),
+    application:stop(imem).
+
+db_conn_test_() ->
     {timeout, 1000000, {
         setup,
-        fun setup/0,
-        fun teardown/1,
+        fun setup_con/0,
+        fun teardown_con/1,
         {with, [
-                fun all_tables/1
-                , fun table_create_select_drop/1
-                , fun table_modify/1
+                fun all_cons/1
+                , fun bad_con_reject/1
         ]}
         }
     }.
 
+% db_test_() ->
+%     {timeout, 1000000, {
+%         setup,
+%         fun setup/0,
+%         fun teardown/1,
+%         {with, [
+%                 fun all_tables/1
+%                 , fun table_create_select_drop/1
+%                 , fun table_modify/1
+%         ]}
+%         }
+%     }.
+
+all_cons(_) ->
+    io:format(user, "--------- authentication success for tcp/rpc/local ----------~n", []),
+    Schema = 'Imem',
+    Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
+    BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
+    ?assertMatch({?MODULE, _}, erlimem_session:open(rpc, {node(), Schema}, Cred)),
+    ?assertMatch({?MODULE, _}, erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred)),
+    ?assertMatch({?MODULE, _}, erlimem_session:open(local_sec, {Schema}, Cred)),
+    ?assertMatch({?MODULE, _}, erlimem_session:open(local, {Schema}, Cred)),
+    io:format(user, "Connected successfully~n", []),
+    io:format(user, "------------------------------------------------------------~n", []).
+
+bad_con_reject(_) ->
+    io:format(user, "--------- authentication failed for tcp/rpc -----------------~n", []),
+    Schema = 'Imem',
+    BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
+    ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(rpc, {node(), Schema}, BadCred)),
+    ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(tcp, {localhost, 8124, Schema}, BadCred)),
+    io:format(user, "Connections rejected properly~n", []),
+    io:format(user, "------------------------------------------------------------~n", []).
+
 all_tables(Sess) ->
     io:format(user, "--------- select from all_tables (all_tables) ---------------~n", []),
-    {ok, Clms, Statement} = Sess:exec("select name(qname) from all_tables;", 100),
+    {ok, Clms, _, Statement} = Sess:exec("select name(qname) from all_tables;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     io:format(user, "receiving...~n", []),
