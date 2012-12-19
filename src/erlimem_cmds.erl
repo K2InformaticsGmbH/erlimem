@@ -34,7 +34,8 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
                 end,
                 if Fun =/= fetch_recs_async -> Res; true -> ok end;
             Socket ->
-                gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args]))
+                gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args])),
+                if Fun =/= fetch_recs_async -> rcv_tcp_pkt(Socket, <<>>); true -> ok end
         end
     catch
         _Class:Result -> throw({Result, erlang:get_stacktrace()})
@@ -49,17 +50,23 @@ recv_async(Pid, _) when is_pid(Pid) ->
 recv_async(Sock, Bin) ->
     Pid = self(),
     spawn(fun() ->
-        case gen_tcp:recv(Sock, 0) of
-            {ok, Pkt} ->
-            NewBin = << Bin/binary, Pkt/binary >>,
-            case (catch binary_to_term(NewBin)) of
-                {'EXIT', _Reason} ->
-                    io:format(user, "term incomplete, received ~p bytes waiting for more...~n", [byte_size(Pkt)]),
-                    recv_async(Sock, NewBin);
-                Term ->
-                    gen_server:cast(Pid, {async_resp,  Term})
-            end;
-        {error, Reason} ->
-            throw({error, {"TCP receive error", Reason}})
-        end
+        Resp = rcv_tcp_pkt(Sock, Bin),
+        gen_server:cast(Pid, {async_resp,  Resp})
     end).
+
+rcv_tcp_pkt(Sock, Bin) ->
+    case gen_tcp:recv(Sock, 0) of
+        {ok, Pkt} ->
+        NewBin = << Bin/binary, Pkt/binary >>,
+        case (catch binary_to_term(NewBin)) of
+            {'EXIT', _Reason} ->
+                io:format(user, "term incomplete, received ~p bytes waiting for more...~n", [byte_size(Pkt)]),
+                rcv_tcp_pkt(Sock, NewBin);
+            {error, Exception} ->
+                throw(Exception);
+            Term ->
+                Term
+        end;
+    {error, Reason} ->
+        throw({{error, Reason}, erlang:get_stacktrace()})
+    end.

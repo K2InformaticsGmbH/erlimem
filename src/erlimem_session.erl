@@ -95,26 +95,30 @@ call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
 
 init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) ->
-    try
-        case connect(Type, Opts) of
-            {ok, Connect, Schema} ->
-                io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
-                Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    case connect(Type, Opts) of
+        {ok, Connect, Schema} ->
+            try
                 SeCo =  case Connect of
                     {local, _} -> undefined;
                     _ ->
-                        io:format(user, "authenticate with ~p~n", [{User, {pwdmd5, Password}}]),
                         S = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
-                        io:format(user, "logging in for ~p~n", [User]),
                         erlimem_cmds:exec({login,S}, Connect)
                 end,
-                {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}};
-            {error, Reason} -> {stop, Reason}
-        end
-    catch
-        _Class:{Result,ST} ->
-            io:format(user, "erlimem connect error ~p~n", [{Result, ST}]),
-            {stop, Result}
+                io:format(user, "~p started ~p connected to ~p~n", [?MODULE, self(), {Type, Opts}]),
+                Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+                {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}}
+            catch
+            _Class:{Result,ST} ->
+                io:format(user, "erlimem connect error ~p~n", [{Result, ST}]),
+                case Connect of
+                    {tcp, Sock} -> gen_tcp:close(Sock);
+                    _ -> ok
+                end,
+                {stop, Result}
+            end;
+        {error, Reason} ->
+            io:format(user, "erlimem connect error ~p~n", [Reason]),
+            {stop, Reason}
     end.
 
 connect(tcp, {IpAddr, Port, Schema}) ->
@@ -364,7 +368,7 @@ setup(Type) ->
 
 setup() ->
     random:seed(erlang:now()),
-    setup(tcp).
+    setup(local).
 
 teardown(_Sess) ->
    % Sess:close(),
@@ -396,18 +400,18 @@ db_conn_test_() ->
         }
     }.
 
-% db_test_() ->
-%     {timeout, 1000000, {
-%         setup,
-%         fun setup/0,
-%         fun teardown/1,
-%         {with, [
-%                 fun all_tables/1
-%                 , fun table_create_select_drop/1
-%                 , fun table_modify/1
-%         ]}
-%         }
-%     }.
+db_test_() ->
+    {timeout, 1000000, {
+        setup,
+        fun setup/0,
+        fun teardown/1,
+        {with, [
+                fun all_tables/1
+%                , fun table_create_select_drop/1
+%                , fun table_modify/1
+        ]}
+        }
+    }.
 
 all_cons(_) ->
     io:format(user, "--------- authentication success for tcp/rpc/local ----------~n", []),
@@ -422,16 +426,20 @@ all_cons(_) ->
     io:format(user, "------------------------------------------------------------~n", []).
 
 bad_con_reject(_) ->
-    io:format(user, "--------- authentication failed for tcp/rpc -----------------~n", []),
+    io:format(user, "--------- authentication failed for rpc/tcp -----------------~n", []),
     Schema = 'Imem',
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(rpc, {node(), Schema}, BadCred)),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(tcp, {localhost, 8124, Schema}, BadCred)),
+    ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(local_sec, {Schema}, BadCred)),
     io:format(user, "Connections rejected properly~n", []),
     io:format(user, "------------------------------------------------------------~n", []).
 
 all_tables(Sess) ->
+try
     io:format(user, "--------- select from all_tables (all_tables) ---------------~n", []),
+    Res = Sess:exec("select name(qname) from all_tables;", 100),
+    io:format(user, "select ~p~n", [Res]),
     {ok, Clms, _, Statement} = Sess:exec("select name(qname) from all_tables;", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
@@ -441,7 +449,10 @@ all_tables(Sess) ->
     io:format(user, "received ~p~n", [Rows]),
     Statement:close(),
     io:format(user, "statement closed~n", []),
-    io:format(user, "------------------------------------------------------------~n", []).
+    io:format(user, "------------------------------------------------------------~n", [])
+catch
+_C:R -> io:format(user, "EX ~p~n", [R])
+end.
 
 table_create_select_drop(Sess) ->
     io:format(user, "-- create insert select drop (table_create_select_drop) ----~n", []),
