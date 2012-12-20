@@ -53,6 +53,7 @@
         , delete_rows/2
         , insert_rows/2
         , commit_modified/1
+        , tables/1
 		]).
 
 %% gen_server callbacks
@@ -91,6 +92,7 @@ update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {m
 delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
 commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
+tables(                      {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {tables, StmtRef}).
 start_async_read(            {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
     gen_server:cast(Pid, {read_block_async, StmtRef}).
@@ -221,10 +223,15 @@ handle_call({modify_rows, Op, Rows, Ref}, _From, #state{idle_timer=Timer,stmts=S
     erlimem_buf:modify_rows(Buf, Op, Rows),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer}};
+handle_call({tables, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
+    Tables = erlimem_buf:get_tables(Buf),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,Tables,State#state{idle_timer=NewTimer}};
 handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf} = Stmt,
+    {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
     Rows = erlimem_buf:get_modified_rows(Buf),
     lager:debug([session, self()], "~p modified rows ~p", [?MODULE, Rows]),
     Result =
