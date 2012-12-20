@@ -2,6 +2,7 @@
 ## Eclipse
 #################
 
+*.log
 *.pydevproject
 .project
 .metadata
@@ -17,6 +18,8 @@ local.properties
 .loadpath
 .eunit/
 ebin/
+log/
+deps/
 
 # External tool builders
 .externalToolBuilders/

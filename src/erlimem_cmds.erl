@@ -45,7 +45,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
     catch
         _Class:Result ->
             lager:error([session, self()], "~p exp ~p", [?MODULE, Result]),
-            lager:debug([session, self()], "~p exp stack ~p", [?MODULE, erlang:get_stacktrace()]),
+            %lager:debug([session, self()], "~p exp stack ~p", [?MODULE, erlang:get_stacktrace()]),
             throw({Result, erlang:get_stacktrace()})
     end.
 

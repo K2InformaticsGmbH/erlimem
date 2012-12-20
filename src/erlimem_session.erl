@@ -15,7 +15,11 @@
     idle_timer,
     schema,
     seco = undefined,
-    event_pids=[]
+    event_pids=[],
+    pending,
+    buf = <<>>,
+    maxrows,
+    cmd
 }).
 
 -record(drvstmt, {
@@ -62,17 +66,6 @@
 
 %% @doc open new session
 open(Type, Opts, Cred) ->
-%    case lists:keyfind(lager, 1, application:which_applications()) of
-%    false ->
-%        application:load(lager),
-%        application:set_env(lager, handlers, [{lager_console_backend, info},
-%                                              {lager_file_backend,
-%                                               [{"error.log", error, 10485760, "$D0", 5},
-%                                                {"console.log", info, 10485760, "$D0", 5}]}]),
-%        application:set_env(lager, error_logger_redirect, false),
-%        lager:start();
-%    _ -> ok
-%    end,
     case gen_server:start(?MODULE, [Type, Opts, Cred], []) of
         {ok, Pid} -> {?MODULE, Pid};
         Other -> Other
@@ -83,7 +76,7 @@ close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
 exec(StmtStr,                                    Ctx) -> exec(StmtStr, 0, Ctx).
-exec(StmtStr, BufferSize,                        Ctx) -> io:format(user, "___~n", []), run_cmd(exec, [StmtStr, BufferSize], Ctx).
+exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
 exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
 read_block(StmtRef,                              Ctx) -> run_cmd(read_block, [StmtRef], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
@@ -249,7 +242,12 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,State#state{idle_timer=NewTimer}};
 
-handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=Stmts, schema=Schema, seco=SeCo, event_pids=EvtPids} = State) ->
+handle_call(Msg, {From, _} = Frm, #state{connection=Connection
+                                        ,idle_timer=Timer
+                                        ,stmts=Stmts
+                                        ,schema=Schema
+                                        ,seco=SeCo
+                                        ,event_pids=EvtPids} = State) ->
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
@@ -267,7 +265,7 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=
             MaxRows = 0,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
-    lager:debug([session, self()], "~p TX Msg ~p", [?MODULE, NewMsg]),
+    lager:debug([session, self()], "~p TX Msg ~p with seco ~p", [?MODULE, NewMsg, SeCo]),
     {NewState, Result} = try
         case erlimem_cmds:exec(NewMsg, Connection) of
             {ok, Clms, Fun, Ref} ->
@@ -291,6 +289,7 @@ handle_call(Msg, {From, _}, #state{connection=Connection,idle_timer=Timer,stmts=
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
+    %{noreply,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows,cmd=Cmd}}.
 
 handle_cast({read_block_async, StmtRef}, #state{connection=Connection, seco=SeCo}=State) ->    
     erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection),
@@ -314,6 +313,34 @@ handle_cast(Request, State) ->
     lager:error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
     {noreply, State}.
 
+handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows,cmd=Cmd}=State) ->
+    NewBin = << Buf/binary, Pkt/binary >>,
+    NewStatements =
+    case (catch binary_to_term(NewBin)) of
+            {'EXIT', _Reason} ->
+                lager:debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
+                Stmts;
+            {error, Exception} ->
+                lager:error("~p throw ~p", [?MODULE, Exception]),
+                throw(Exception);
+            {ok, Clms, Fun, Ref} ->
+                lager:debug("~p ~p RX ~p", [?MODULE, Cmd, {Clms, Fun, Ref}]),
+                Rslt = {ok, Clms, {?MODULE, Ref, self()}},
+                NStmts = lists:keystore(Ref, 1, Stmts,
+                            {Ref, #drvstmt{ result   = {columns, Clms}
+                                            , ref      = Ref
+                                            , buf      = erlimem_buf:create(Fun)
+                                            , maxrows  = MaxRows}
+                            }),
+                gen_server:reply(Form, Rslt),
+                NStmts;
+            Term ->
+                lager:debug("~p ~p RX ~p", [?MODULE, Cmd, Term]),
+                gen_server:reply(Form, Term),
+                Stmts
+    end,
+    inet:setopts(S,[{active,once}]),
+    {noreply, State#state{buf=NewBin, stmts=NewStatements}};
 handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
     case lists:keyfind(activity, 1, EvtPids) of
         {_, Pid} when is_pid(Pid) -> Pid ! Evt;
@@ -324,10 +351,7 @@ handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
 handle_info({_,{S, Ctx, _}} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
                                                                           S =:= delete_object;
                                                                           S =:= delete ->
-    Tab = case Ctx of
-        {T,_} -> T;
-        Ctx -> element(1, Ctx)
-    end,
+    Tab = element(1, Ctx),
     case lists:keyfind({table, Tab}, 1, EvtPids) of
         {_, Pid} -> Pid ! Evt;
         _ ->
@@ -391,7 +415,7 @@ setup(Type) ->
 
 setup() ->
     erlimem:start(),
-    lager:set_loglevel(lager_console_backend, debug),
+    lager:set_loglevel(lager_console_backend, info),
     random:seed(erlang:now()),
     setup(tcp).
 
@@ -402,7 +426,7 @@ teardown(_Sess) ->
 
 setup_con() ->
     erlimem:start(),
-    lager:set_loglevel(lager_console_backend, debug),
+    lager:set_loglevel(lager_console_backend, info),
     application:load(imem),
     {ok, S} = application:get_env(imem, mnesia_schema_name),
     {ok, Cwd} = file:get_cwd(),
@@ -415,17 +439,17 @@ teardown_con(_) ->
     erlimem:stop(),
     application:stop(imem).
 
-%db_conn_test_() ->
-%    {timeout, 1000000, {
-%        setup,
-%        fun setup_con/0,
-%        fun teardown_con/1,
-%        {with, [
-%                fun all_cons/1
-%                , fun bad_con_reject/1
-%        ]}
-%        }
-%    }.
+db_conn_test_() ->
+    {timeout, 1000000, {
+        setup,
+        fun setup_con/0,
+        fun teardown_con/1,
+        {with, [
+                fun all_cons/1
+                , fun bad_con_reject/1
+        ]}
+        }
+    }.
 
 db_test_() ->
     {timeout, 1000000, {
@@ -435,13 +459,13 @@ db_test_() ->
         {with, [
                 fun all_tables/1
                 , fun table_create_select_drop/1
-%                , fun table_modify/1
+                , fun table_modify/1
         ]}
         }
     }.
 
 all_cons(_) ->
-    lager:debug("--------- authentication success for tcp/rpc/local ----------"),
+    io:format(user, "--------- authentication success for tcp/rpc/local ----------~n",[]),
     Schema = 'Imem',
     Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
@@ -449,80 +473,80 @@ all_cons(_) ->
     ?assertMatch({?MODULE, _}, erlimem_session:open(tcp, {localhost, 8124, Schema}, Cred)),
     ?assertMatch({?MODULE, _}, erlimem_session:open(local_sec, {Schema}, Cred)),
     ?assertMatch({?MODULE, _}, erlimem_session:open(local, {Schema}, Cred)),
-    lager:debug("connected successfully"),
-    lager:debug("------------------------------------------------------------").
+    io:format(user, "connected successfully~n",[]),
+    io:format(user, "------------------------------------------------------------~n",[]).
 
 bad_con_reject(_) ->
-    lager:debug("--------- authentication failed for rpc/tcp -----------------"),
+    io:format(user, "--------- authentication failed for rpc/tcp -----------------~n",[]),
     Schema = 'Imem',
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(rpc, {node(), Schema}, BadCred)),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(tcp, {localhost, 8124, Schema}, BadCred)),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(local_sec, {Schema}, BadCred)),
-    lager:debug("connections rejected properly"),
-    lager:debug("------------------------------------------------------------").
+    io:format(user, "connections rejected properly~n",[]),
+    io:format(user, "------------------------------------------------------------~n",[]).
 
 all_tables(Sess) ->
-    lager:debug("--------- select from all_tables (all_tables) ---------------"),
-    lager:debug("all_table ~p", [Sess]),
-    {ok, Clms, Statement} = Sess:exec("select name(qname) from all_tables;", 100),
-    lager:debug("select ~p~n", [{Clms, Statement}]),
+    io:format(user, "--------- select from all_tables (all_tables) ---------------~n",[]),
+    Sql = "select name(qname) from all_tables;",
+    {ok, Clms, Statement} = Sess:exec(Sql, 100),
+    io:format(user, "~p -> ~p~n", [Sql, {Clms, Statement}]),
     Statement:start_async_read(),
-    lager:debug("receiving...", []),
+    io:format(user, "receiving...~n", []),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
     io:format(user, "received ~p~n", [Rows]),
     Statement:close(),
-    lager:debug("statement closed~n", []),
-    lager:debug("------------------------------------------------------------").
+    io:format(user, "statement closed~n", []),
+    io:format(user, "------------------------------------------------------------~n",[]).
 
 table_create_select_drop(Sess) ->
-    lager:debug("-- create insert select drop (table_create_select_drop) ----~n", []),
+    io:format(user, "-- create insert select drop (table_create_select_drop) ----~n", []),
     Table = def,
-    Res = Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
-    lager:debug("Create ~p~n", [Res]),
+    Sql = "create table "++atom_to_list(Table)++" (col1 integer, col2 varchar);",
+    Res = Sess:exec(Sql),
+    io:format(user, "~p -> ~p~n", [Sql, Res]),
     Res1 = Sess:run_cmd(subscribe, [{table,Table,simple}]),
-    lager:debug("subscribe ~p~n", [Res1]),
+    io:format(user, "subscribe ~p~n", [Res1]),
     % - {error, Result} = Sess:exec("create table Table (col1 int, col2 char);"),
-    % - lager:debug("Duplicate Create ~p~n", [Result]),
+    % - io:format(user, "Duplicate Create ~p~n", [Result]),
     Res0 = insert_range(Sess, 20, atom_to_list(Table)),
-    lager:debug("insert ~p~n", [Res0]),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
-    lager:debug("select ~p~n", [{Clms, Statement}]),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
-    lager:debug("receiving...", []),
+    io:format(user, "receiving...~n", []),
     {Rows,_,_} = Statement:next_rows(),
     Statement:close(),
-    lager:debug("statement closed", []),
-    lager:debug("received ~p~n", [length(Rows)]),
+    io:format(user, "statement closed~n", []),
+    io:format(user, "received ~p~n", [length(Rows)]),
     ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
-    lager:debug("drop table~n", []),
-    lager:debug("------------------------------------------------------------").
+    io:format(user, "drop table~n", []),
+    io:format(user, "------------------------------------------------------------~n",[]).
 
 table_modify(Sess) ->
-    lager:debug("------- update insert new delete rows (table_modify) -------"),
+    io:format(user, "------- update insert new delete rows (table_modify) -------~n",[]),
     Table = def,
-    Sess:exec("create table "++atom_to_list(Table)++" (col1 int, col2 char);"),
+    Sess:exec("create table "++atom_to_list(Table)++" (col1 integer, col2 varchar);"),
     NumRows = 10,
     insert_range(Sess, NumRows, atom_to_list(Table)),
     {ok, _, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
     Statement:start_async_read(),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
-    lager:debug("original table from db ~p~n", [Rows]),
+    io:format(user, "original table from db ~p~n", [Rows]),
     Statement:update_rows(update_random(length(Rows)-1,5,Rows)), % modify some rows in buffer
     Statement:delete_rows(update_random(length(Rows)-1,5,Rows)), % delete some rows in buffer
     Statement:insert_rows(insert_random(length(Rows)-1,5,[])),   % insert some rows in buffer
     Rows9 = Statement:commit_modified(),
-    lager:debug("changed rows ~p~n", [Rows9]),
+    io:format(user, "changed rows ~p~n", [Rows9]),
     Statement:start_async_read(),
     timer:sleep(1000),
     {NewRows1,_,_} = Statement:next_rows(),
-    lager:debug("modified table from db ~p~n", [NewRows1]),
+    io:format(user, "modified table from db ~p~n", [NewRows1]),
     Statement:close(),
     ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
-    lager:debug("------------------------------------------------------------").
+    io:format(user, "------------------------------------------------------------~n",[]).
 
 insert_random(_, 0, Rows) -> Rows;
 insert_random(Max, Count, Rows) ->
@@ -539,5 +563,7 @@ update_random(Max, Count, Rows, NewRows) ->
 
 insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
-    Sess:exec("insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');"),
+    Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');",
+    Res = Sess:exec(Sql),
+    io:format(user, "~p -> ~p~n", [Sql, Res]),
     insert_range(Sess, N-1, TableName).
