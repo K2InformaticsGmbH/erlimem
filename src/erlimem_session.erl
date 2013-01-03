@@ -18,8 +18,7 @@
     event_pids=[],
     pending,
     buf = <<>>,
-    maxrows,
-    cmd
+    maxrows
 }).
 
 -record(drvstmt, {
@@ -42,6 +41,7 @@
 
 % statement APIs
 -export([start_async_read/1
+        , start_async_read/2
         , get_buffer_max/1
         , rows_from/2
         , prev_rows/1
@@ -93,9 +93,10 @@ delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {m
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
 commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
 tables(                      {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {tables, StmtRef}).
-start_async_read(            {?MODULE, StmtRef, Pid}) ->
+start_async_read(                                Ctx) -> start_async_read([], Ctx).
+start_async_read(Opts,       {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
-    gen_server:cast(Pid, {read_block_async, StmtRef}).
+    gen_server:cast(Pid, {read_block_async, Opts, StmtRef}).
 
 call(Pid, Msg) ->
     lager:debug("~p call ~p ~p", [?MODULE, Pid, Msg]),
@@ -109,8 +110,13 @@ init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) -
                 SeCo =  case Connect of
                     {local, _} -> undefined;
                     _ ->
-                        S = erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
-                        erlimem_cmds:exec({login,S}, Connect)
+                        erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
+                        S = erlimem_cmds:recv_sync(Connect, <<>>),
+                        erlimem_cmds:exec({login,S}, Connect),
+                        S = erlimem_cmds:recv_sync(Connect, <<>>),
+                        {_,Sck} = Connect,
+                        inet:setopts(Sck,[{active,once}]),
+                        S
                 end,
                 lager:info("~p started ~p connected to ~p", [?MODULE, self(), {Type, Opts}]),
                 Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
@@ -146,14 +152,14 @@ connect(local, {Schema})                         -> {ok, {local, undefined}, Sch
 handle_call(stop, _From, #state{stmts=Stmts}=State) ->
     _ = [erlimem_buf:delete(Buf) || #drvstmt{buf=Buf} <- Stmts],
     {stop,normal,State};
-handle_call({close_statement, StmtRef}, _From, #state{connection=Connection,seco=SeCo,stmts=Stmts}=State) ->
+handle_call({close_statement, StmtRef}, From, #state{connection=Connection,seco=SeCo,stmts=Stmts}=State) ->
     case lists:keytake(StmtRef, 1, Stmts) of
         {value, {StmtRef, #drvstmt{buf=Buf}}, NewStmts} ->
             erlimem_buf:delete(Buf),
             erlimem_cmds:exec({close, SeCo, StmtRef}, Connection);
         false -> NewStmts = Stmts
     end,
-    {reply,ok,State#state{stmts=NewStmts}};
+    {noreply,State#state{pending=From, stmts=NewStmts}};
 
 handle_call({update_row, RowId, ColumId, Val, Ref}, From, #state{stmts=Stmts} = State) ->
     {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
@@ -272,66 +278,49 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             MaxRows = 0,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
-    lager:debug([session, self()], "~p TX Msg ~p with seco ~p", [?MODULE, NewMsg, SeCo]),
-    {NewState, Result} = try
-        case erlimem_cmds:exec(NewMsg, Connection) of
-            {ok, Clms, Fun, Ref} ->
-                Rslt = {ok, Clms, {?MODULE, Ref, self()}},
-                {State#state{stmts=lists:keystore(Ref, 1, Stmts,
-                                {Ref, #drvstmt{ result   = {columns, Clms}
-                                                , ref      = Ref
-                                                , buf      = erlimem_buf:create(Fun)
-                                                , maxrows  = MaxRows}
-                                })
-                           },
-                Rslt};
-            Res ->
-                {State, Res}
-        end
-    catch
-        _Class:{ExcpRes, ST} ->
-            lager:error([session, self()], "~p ~p", [?MODULE, ExcpRes]),
-            lager:debug([session, self()], "~p error stackstrace ~p", [?MODULE, ST]),
-            {State, {error, ExcpRes}}
-    end,
+    erlimem_cmds:exec(NewMsg, Connection),
+    %lager:info([session, self()], "~p TX Msg ~p with seco ~p", [?MODULE, NewMsg, SeCo]),
+    % {NewState, Result} = try
+    %     case erlimem_cmds:exec(NewMsg, Connection) of
+    %         {ok, Clms, Fun, Ref} ->
+    %             Rslt = {ok, Clms, {?MODULE, Ref, self()}},
+    %             {State#state{stmts=lists:keystore(Ref, 1, Stmts,
+    %                             {Ref, #drvstmt{ result   = {columns, Clms}
+    %                                             , ref      = Ref
+    %                                             , buf      = erlimem_buf:create(Fun)
+    %                                             , maxrows  = MaxRows}
+    %                             })
+    %                        },
+    %             Rslt};
+    %         Res ->
+    %             {State, Res}
+    %     end
+    % catch
+    %     _Class:{ExcpRes, ST} ->
+    %         lager:error([session, self()], "~p ~p", [?MODULE, ExcpRes]),
+    %         lager:debug([session, self()], "~p error stackstrace ~p", [?MODULE, ST]),
+    %         {State, {error, ExcpRes}}
+    % end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Result,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids}}.
-    %{noreply,NewState#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows,cmd=Cmd}}.
+    {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}.
 
-handle_cast({read_block_async, StmtRef}, #state{connection=Connection, seco=SeCo}=State) ->    
-    erlimem_cmds:exec({fetch_recs_async, SeCo, StmtRef}, Connection),
-    {noreply, State};
-handle_cast({async_resp, {StmtRef, Resp}}, #state{stmts=Stmts, seco=SeCo}=State) ->
-    {_, #drvstmt{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
-    case Resp of
-        {[], _} -> lager:info([session, self()], "~p async_resp []", [?MODULE]);
-        {error, Result} ->
-            lager:error([session, self()], "~p async_resp ~p", [?MODULE, Result]);
-        {Rows, true} ->
-            erlimem_buf:insert_rows(Buffer, Rows);
-        {Rows, false} ->
-            erlimem_buf:insert_rows(Buffer, Rows),
-            gen_server:cast(self(), {read_block_async, StmtRef});
-        Unknown ->
-            lager:error([session, self()], "~p async_resp unknown resp ~p", [?MODULE, Unknown])
-    end,
+handle_cast({read_block_async, Opts, StmtRef}, #state{connection=Connection, seco=SeCo}=State) ->
+    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),
     {noreply, State};
 handle_cast(Request, State) ->
     lager:error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
     {noreply, State}.
 
-handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows,cmd=Cmd}=State) ->
-    NewBin = << Buf/binary, Pkt/binary >>,
-    NewStatements =
-    case (catch binary_to_term(NewBin)) of
-            {'EXIT', _Reason} ->
-                lager:debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
-                Stmts;
+% 
+% local / rpc
+%
+handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
+    NewStmts = case Resp of
             {error, Exception} ->
                 lager:error("~p throw ~p", [?MODULE, Exception]),
                 throw(Exception);
             {ok, Clms, Fun, Ref} ->
-                lager:debug("~p ~p RX ~p", [?MODULE, Cmd, {Clms, Fun, Ref}]),
+                lager:info("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
                 Rslt = {ok, Clms, {?MODULE, Ref, self()}},
                 NStmts = lists:keystore(Ref, 1, Stmts,
                             {Ref, #drvstmt{ result   = {columns, Clms}
@@ -341,13 +330,76 @@ handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts
                             }),
                 gen_server:reply(Form, Rslt),
                 NStmts;
+            {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                lager:debug("LOCAL async __RX__ rows ~p For ~p", [length(Rows), Form]),
+                handle_info({StmtRef,{Rows,Completed}}, State),
+                Stmts;
             Term ->
-                lager:debug("~p ~p RX ~p", [?MODULE, Cmd, Term]),
+                lager:debug("LOCAL async __RX__ ~p For ~p", [Term, Form]),
                 gen_server:reply(Form, Term),
                 Stmts
     end,
+    {noreply, State#state{stmts=NewStmts}};
+handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
+    {_, #drvstmt{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
+    case {Rows,Completed} of
+        {[], _} -> lager:info([session, self()], "~p async_resp []", [?MODULE]);
+        {error, Result} ->
+            lager:error([session, self()], "~p async_resp ~p", [?MODULE, Result]);
+        {Rows, true} ->
+            erlimem_buf:insert_rows(Buffer, Rows);
+        {Rows, false} ->
+            erlimem_buf:insert_rows(Buffer, Rows);
+            %gen_server:cast(self(), {read_block_async, StmtRef}); % TODO - stop after first block receive
+        Unknown ->
+            lager:error([session, self()], "~p async_resp unknown resp ~p", [?MODULE, Unknown])
+    end,
+    {noreply, State};
+
+% 
+% tcp
+%
+handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
+    NewBin = << Buf/binary, Pkt/binary >>,
+    NewStatements =
+    case (catch binary_to_term(NewBin)) of
+            {'EXIT', _Reason} ->
+                lager:debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
+                NewBuf = NewBin,
+                Stmts;
+            {error, Exception} ->
+                lager:error("~p throw ~p", [?MODULE, Exception]),
+                NewBuf = <<>>,
+                throw(Exception);
+            {ok, Clms, Fun, Ref} ->
+                lager:info("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
+                Rslt = {ok, Clms, {?MODULE, Ref, self()}},
+                NStmts = lists:keystore(Ref, 1, Stmts,
+                            {Ref, #drvstmt{ result   = {columns, Clms}
+                                            , ref      = Ref
+                                            , buf      = erlimem_buf:create(Fun)
+                                            , maxrows  = MaxRows}
+                            }),
+                gen_server:reply(Form, Rslt),
+                NewBuf = <<>>,
+                NStmts;
+            {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                lager:info("TCP async __RX__ rows ~p For ~p", [length(Rows), Form]),
+                NewBuf = <<>>,
+                handle_info({StmtRef,{Rows,Completed}}, State),
+                Stmts;
+            Term ->
+                lager:info("TCP async __RX__ ~p For ~p", [Term, Form]),
+                gen_server:reply(Form, Term),
+                NewBuf = <<>>,
+                Stmts
+    end,
     inet:setopts(S,[{active,once}]),
-    {noreply, State#state{buf=NewBin, stmts=NewStatements}};
+    {noreply, State#state{buf=NewBuf, stmts=NewStatements}};
+
+%
+% MNESIA Events
+%
 handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
     case lists:keyfind(activity, 1, EvtPids) of
         {_, Pid} when is_pid(Pid) -> Pid ! Evt;
@@ -454,17 +506,17 @@ teardown_con(_) ->
     application:stop(imem),
     io:format(user, "+===========================================================+~n",[]).
 
-db_conn_test_() ->
-    {timeout, 1000000, {
-        setup,
-        fun setup_con/0,
-        fun teardown_con/1,
-        {with, [
-               fun bad_con_reject/1
-               , fun all_cons/1
-        ]}
-        }
-    }.
+%db_conn_test_() ->
+%    {timeout, 1000000, {
+%        setup,
+%        fun setup_con/0,
+%        fun teardown_con/1,
+%        {with, [
+%               fun bad_con_reject/1
+%               , fun all_cons/1
+%        ]}
+%        }
+%    }.
 
 db_test_() ->
     {timeout, 1000000, {
@@ -475,6 +527,7 @@ db_test_() ->
                 fun all_tables/1
                 , fun table_create_select_drop/1
                 , fun table_modify/1
+                , fun table_tail/1
         ]}
         }
     }.
@@ -491,7 +544,7 @@ all_cons(_) ->
     io:format(user, "------------------------------------------------------------~n",[]).
 
 bad_con_reject(_) ->
-    io:format(user, "--------- authentication failed for rpc/tcp -----------------~n",[]),
+    io:format(user, "--------- authentication failed for rpc/tcp ----------------~n",[]),
     Schema = 'Imem',
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem_session:open(rpc, {node(), Schema}, BadCred)),
@@ -504,7 +557,7 @@ bad_con_reject(_) ->
     io:format(user, "------------------------------------------------------------~n",[]).
 
 all_tables(Sess) ->
-    io:format(user, "--------- select from all_tables (all_tables) ---------------~n",[]),
+    io:format(user, "--------- select from all_tables (all_tables) --------------~n",[]),
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
     io:format(user, "~p -> ~p~n", [Sql, {Clms, Statement}]),
@@ -520,14 +573,8 @@ all_tables(Sess) ->
 table_create_select_drop(Sess) ->
     io:format(user, "-- create insert select drop (table_create_select_drop) ----~n", []),
     Table = def,
-    Sql = "create table "++atom_to_list(Table)++" (col1 integer, col2 varchar);",
-    Res = Sess:exec(Sql),
-    io:format(user, "~p -> ~p~n", [Sql, Res]),
-    % - Res1 = Sess:run_cmd(subscribe, [{table,Table,simple}]),
-    % - io:format(user, "subscribe ~p~n", [Res1]),
-    % - {error, Result} = Sess:exec("create table Table (col1 int, col2 char);"),
-    % - io:format(user, "Duplicate Create ~p~n", [Result]),
-    Res0 = insert_range(Sess, 20, atom_to_list(Table)),
+    create_table(Sess),
+    insert_range(Sess, 20, atom_to_list(Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
@@ -535,19 +582,18 @@ table_create_select_drop(Sess) ->
     io:format(user, "receiving...~n", []),
     {Rows,_,_} = Statement:next_rows(),
     Statement:close(),
-    io:format(user, "statement closed~n", []),
     io:format(user, "received ~p~n", [length(Rows)]),
-    ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
-    io:format(user, "drop table~n", []),
+    drop_table(Sess),
     io:format(user, "------------------------------------------------------------~n",[]).
 
 table_modify(Sess) ->
     io:format(user, "------- update insert new delete rows (table_modify) -------~n",[]),
     Table = def,
-    Sess:exec("create table "++atom_to_list(Table)++" (col1 integer, col2 varchar);"),
+    create_table(Sess),
     NumRows = 10,
     insert_range(Sess, NumRows, atom_to_list(Table)),
-    {ok, _, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
@@ -562,8 +608,54 @@ table_modify(Sess) ->
     {NewRows1,_,_} = Statement:next_rows(),
     io:format(user, "modified table from db ~p~n", [NewRows1]),
     Statement:close(),
-    ok = Sess:exec("drop table "++atom_to_list(Table)++";"),
+    drop_table(Sess),
     io:format(user, "------------------------------------------------------------~n",[]).
+
+table_tail(Sess) ->
+    io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
+    Table = def,
+    create_table(Sess),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
+    timer:sleep(100),
+    Statement:start_async_read([{tail_mode,true}]),
+    timer:sleep(100),
+    insert_async(Sess, 20, atom_to_list(Table)),
+    io:format(user, "receiving...~n", []),
+    recv_delay(Statement, 10),
+    Statement:close(),
+    io:format(user, "statement closed~n", []),
+    drop_table(Sess),
+    io:format(user, "------------------------------------------------------------~n",[]).
+
+create_table(Sess) ->
+    Sql = "create table def (col1 integer, col2 varchar2);",
+    Res = Sess:exec(Sql),
+    io:format(user, "~p -> ~p~n", [Sql, Res]).
+
+drop_table(Sess) ->
+    ok = Sess:exec("drop table def;"),
+    io:format(user, "drop table~n", []).
+
+recv_delay(_, 0) -> ok;
+recv_delay(Statement, Count) ->
+    timer:sleep(50),
+    {Rows,_,_} = Statement:next_rows(),
+    io:format(user, "received ~p~n", [length(Rows)]),
+    recv_delay(Statement, Count-1).
+
+insert_async(Sess, N, TableName) ->
+    F =
+    fun
+        (_, 0) -> ok;
+        (F, Count) ->
+            timer:sleep(11),
+            Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(Count) ++ ", '" ++ integer_to_list(Count) ++ "');",
+            Res = Sess:exec(Sql),
+            io:format(user, "~p -> ~p~n", [Sql, Res]),
+            F(F,Count-1)
+    end,
+    spawn(fun()-> F(F,N) end).
 
 insert_random(_, 0, Rows) -> Rows;
 insert_random(Max, Count, Rows) ->

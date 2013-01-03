@@ -1,6 +1,6 @@
 -module(erlimem_cmds).
 
--export([exec/2]).
+-export([exec/2, recv_sync/2]).
 
 exec(CmdTuple, {tcp, Socket}) ->
     exec_catch(Socket, undefined, imem_sec, CmdTuple);
@@ -17,8 +17,8 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
     Fun = lists:nth(1, Cmd),
 
     RespPid = case Fun of
-        fetch_recs_async when Media == undefined -> recv_async(self(), <<>>);
-        fetch_recs_async -> recv_async(Media, <<>>);
+%        fetch_recs_async when Media == undefined -> recv_async(self(), <<>>);
+%        fetch_recs_async -> recv_async(Media, <<>>);
         _ -> self()
     end,
     Args = case Fun of
@@ -28,19 +28,21 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
     try
         case Media of
             undefined ->
+                lager:debug("LOCAL ___TX___ ~p", [{Node, Mod, Fun, Args}]),
                 Res = case Node of
                     Node when Node =:= node() ->
-                        lager:debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
-                        apply(Mod, Fun, Args);
+                        ExecRes = apply(Mod, Fun, Args),
+                        lager:debug([session, self()], "~p MFA ~p -> ~p", [?MODULE, {Mod, Fun, Args}, ExecRes]),
+                        self() ! {resp, ExecRes};
                     _ ->
                         lager:debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
-                        rpc:call(Node, Mod, Fun, Args)
+                        self() ! rpc:call(Node, Mod, Fun, Args)
                 end,
                 if Fun =/= fetch_recs_async -> Res; true -> ok end;
             Socket ->
-                lager:debug([session, self()], "~p TCP MFA ~p", [?MODULE, {Mod, Fun, Args}]),
-                gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args])),
-                if Fun =/= fetch_recs_async -> rcv_tcp_pkt(Socket, <<>>); true -> ok end
+                lager:debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
+                gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args]))
+                %if Fun =/= fetch_recs_async -> rcv_tcp_pkt(Socket, <<>>); true -> ok end
         end
     catch
         _Class:Result ->
@@ -49,34 +51,41 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
             throw({Result, erlang:get_stacktrace()})
     end.
 
-recv_async(Pid, _) when is_pid(Pid) ->
-    spawn(fun() ->
-        receive
-            Data ->
-                lager:debug([session, Pid], "~p RX for ~p data ~p", [?MODULE, Pid, Data]),
-                gen_server:cast(Pid, {async_resp,  Data})
-        end
-    end);
-recv_async(Sock, Bin) ->
-    Pid = self(),
-    spawn(fun() ->
-        Resp = rcv_tcp_pkt(Sock, Bin),
-        %lager:debug([session, Pid], "~p RX for TCP data ~p", [?MODULE, Resp]),
-        gen_server:cast(Pid, {async_resp,  Resp})
-    end).
+% - recv_async(Pid, _) when is_pid(Pid) ->
+% -     spawn(fun() ->
+% -         receive
+% -             Data ->
+% -                 lager:info("LOCAL ___RX___ ~p", [Data]),
+% -                 gen_server:cast(Pid, {async_resp,  Data})
+% -         end
+% -     end);
+% - recv_async(Sock, Bin) ->
+% -     Pid = self(),
+% -     spawn(fun() ->
+% -         Resp = rcv_tcp_pkt(Sock, Bin),
+% -         %lager:debug([session, Pid], "~p RX for TCP data ~p", [?MODULE, Resp]),
+% -         gen_server:cast(Pid, {async_resp,  Resp})
+% -     end).
 
-rcv_tcp_pkt(Sock, Bin) ->
+recv_sync({M, _}, _) when M =:= rpc; M =:= local; M =:= local_sec ->
+    receive
+        Data ->
+            lager:debug("LOCAL ___RX___ ~p", [Data]),
+            Data
+    end;
+recv_sync({tcp, Sock}, Bin) ->
     case gen_tcp:recv(Sock, 0) of
         {ok, Pkt} ->
         NewBin = << Bin/binary, Pkt/binary >>,
         case (catch binary_to_term(NewBin)) of
             {'EXIT', _Reason} ->
                 lager:debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
-                rcv_tcp_pkt(Sock, NewBin);
+                recv_sync({tcp, Sock}, NewBin);
             {error, Exception} ->
                 lager:error("~p throw ~p", [?MODULE, Exception]),
                 throw(Exception);
             Term ->
+                lager:info("TCP ___RX___ ~p", [Term]),
                 Term
         end;
     {error, Reason} ->
