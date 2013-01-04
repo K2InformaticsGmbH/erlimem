@@ -16,13 +16,8 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
     {Cmd, Args0} = lists:split(1, tuple_to_list(CmdTuple)),
     Fun = lists:nth(1, Cmd),
 
-    RespPid = case Fun of
-%        fetch_recs_async when Media == undefined -> recv_async(self(), <<>>);
-%        fetch_recs_async -> recv_async(Media, <<>>);
-        _ -> self()
-    end,
     Args = case Fun of
-        fetch_recs_async -> Args0 ++ [RespPid];
+        fetch_recs_async -> Args0 ++ [self()];
         _                -> Args0
     end,
     try
@@ -42,30 +37,11 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
             Socket ->
                 lager:debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
                 gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args]))
-                %if Fun =/= fetch_recs_async -> rcv_tcp_pkt(Socket, <<>>); true -> ok end
         end
     catch
         _Class:Result ->
-            lager:error([session, self()], "~p exp ~p", [?MODULE, Result]),
-            %lager:debug([session, self()], "~p exp stack ~p", [?MODULE, erlang:get_stacktrace()]),
-            throw({Result, erlang:get_stacktrace()})
+            throw({{error, Result}, erlang:get_stacktrace()})
     end.
-
-% - recv_async(Pid, _) when is_pid(Pid) ->
-% -     spawn(fun() ->
-% -         receive
-% -             Data ->
-% -                 lager:info("LOCAL ___RX___ ~p", [Data]),
-% -                 gen_server:cast(Pid, {async_resp,  Data})
-% -         end
-% -     end);
-% - recv_async(Sock, Bin) ->
-% -     Pid = self(),
-% -     spawn(fun() ->
-% -         Resp = rcv_tcp_pkt(Sock, Bin),
-% -         %lager:debug([session, Pid], "~p RX for TCP data ~p", [?MODULE, Resp]),
-% -         gen_server:cast(Pid, {async_resp,  Resp})
-% -     end).
 
 recv_sync({M, _}, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
@@ -83,7 +59,7 @@ recv_sync({tcp, Sock}, Bin) ->
                 recv_sync({tcp, Sock}, NewBin);
             {error, Exception} ->
                 lager:error("~p throw ~p", [?MODULE, Exception]),
-                throw(Exception);
+                throw({{error, Exception}, erlang:get_stacktrace()});
             Term ->
                 lager:info("TCP ___RX___ ~p", [Term]),
                 Term

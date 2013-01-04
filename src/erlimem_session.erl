@@ -111,11 +111,15 @@ init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) -
                     {local, _} -> undefined;
                     _ ->
                         erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
-                        S = erlimem_cmds:recv_sync(Connect, <<>>),
+                        {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
+                        lager:info("authenticated ~p -> ~p", [{User, Password}, S]),
                         erlimem_cmds:exec({login,S}, Connect),
-                        S = erlimem_cmds:recv_sync(Connect, <<>>),
-                        {_,Sck} = Connect,
-                        inet:setopts(Sck,[{active,once}]),
+                        {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
+                        lager:info("logged in ~p", [{User, S}]),
+                        case Connect of
+                            {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+                            _ -> ok
+                        end,
                         S
                 end,
                 lager:info("~p started ~p connected to ~p", [?MODULE, self(), {Type, Opts}]),
@@ -278,31 +282,16 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             MaxRows = 0,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
-    erlimem_cmds:exec(NewMsg, Connection),
-    %lager:info([session, self()], "~p TX Msg ~p with seco ~p", [?MODULE, NewMsg, SeCo]),
-    % {NewState, Result} = try
-    %     case erlimem_cmds:exec(NewMsg, Connection) of
-    %         {ok, Clms, Fun, Ref} ->
-    %             Rslt = {ok, Clms, {?MODULE, Ref, self()}},
-    %             {State#state{stmts=lists:keystore(Ref, 1, Stmts,
-    %                             {Ref, #drvstmt{ result   = {columns, Clms}
-    %                                             , ref      = Ref
-    %                                             , buf      = erlimem_buf:create(Fun)
-    %                                             , maxrows  = MaxRows}
-    %                             })
-    %                        },
-    %             Rslt};
-    %         Res ->
-    %             {State, Res}
-    %     end
-    % catch
-    %     _Class:{ExcpRes, ST} ->
-    %         lager:error([session, self()], "~p ~p", [?MODULE, ExcpRes]),
-    %         lager:debug([session, self()], "~p error stackstrace ~p", [?MODULE, ST]),
-    %         {State, {error, ExcpRes}}
-    % end,
-    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}.
+    case (catch erlimem_cmds:exec(NewMsg, Connection)) of
+        {{error, E}, ST} ->
+            lager:error("~p", [E]),
+            lager:debug("~p", [ST]),
+            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+            {reply, E, State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}};
+        Result ->
+            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+            {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
+    end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{connection=Connection, seco=SeCo}=State) ->
     erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),
