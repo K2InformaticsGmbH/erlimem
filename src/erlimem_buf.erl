@@ -14,7 +14,7 @@
         , insert_rows/2
         , modify_rows/3
         , get_modified_rows/1
-        , get_tables/1
+        , row_with_key/2
         , get_prev_rows/2
         , get_rows_from/3
         , get_next_rows/2
@@ -33,9 +33,8 @@ clear(#buffer{tableid=Tab} = Buf) ->
 
 delete(#buffer{tableid=Tab}) -> true = ets:delete(Tab).
 
-get_tables(#buffer{tableid=TableId}) ->
-    [R|_] = ets:lookup(TableId, 1),
-    [element(1,T) || T <- tuple_to_list(element(3, R)), size(T) > 0].
+row_with_key(#buffer{tableid=TableId}, RowNum) ->
+    ets:lookup(TableId, RowNum).
 
 get_modified_rows(#buffer{tableid=TableId}) ->
     [tuple_to_list(R) || R <- ets:select(TableId,[{'$1',[{'=/=',nop,{element,2,'$1'}}],['$_']}])].

@@ -53,7 +53,7 @@
         , delete_rows/2
         , insert_rows/2
         , commit_modified/1
-        , tables/1
+        , row_with_key/2
 		]).
 
 %% gen_server callbacks
@@ -92,7 +92,7 @@ update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {m
 delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
 commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
-tables(                      {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {tables, StmtRef}).
+row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
 start_async_read(                                Ctx) -> start_async_read([], Ctx).
 start_async_read(Opts,       {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
@@ -233,12 +233,12 @@ handle_call({modify_rows, Op, Rows, Ref}, _From, #state{idle_timer=Timer,stmts=S
     erlimem_buf:modify_rows(Buf, Op, Rows),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer}};
-handle_call({tables, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({row_with_key, Ref, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
-    Tables = erlimem_buf:get_tables(Buf),
+    {_, #drvstmt{buf=Buf}} = lists:keyfind(Ref, 1, Stmts),
+    [Row] = erlimem_buf:row_with_key(Buf, RowId),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Tables,State#state{idle_timer=NewTimer}};
+    {reply,Row,State#state{idle_timer=NewTimer}};
 handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
@@ -309,7 +309,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                 lager:error("~p throw ~p", [?MODULE, Exception]),
                 throw(Exception);
             {ok, Clms, Fun, Ref} ->
-                lager:info("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
+                lager:debug("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
                 Rslt = {ok, Clms, {?MODULE, Ref, self()}},
                 NStmts = lists:keystore(Ref, 1, Stmts,
                             {Ref, #drvstmt{ result   = {columns, Clms}
@@ -361,7 +361,7 @@ handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts
                 NewBuf = <<>>,
                 throw(Exception);
             {ok, Clms, Fun, Ref} ->
-                lager:info("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
+                lager:debug("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
                 Rslt = {ok, Clms, {?MODULE, Ref, self()}},
                 NStmts = lists:keystore(Ref, 1, Stmts,
                             {Ref, #drvstmt{ result   = {columns, Clms}
