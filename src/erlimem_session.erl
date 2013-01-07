@@ -468,7 +468,7 @@ setup() ->
     erlimem:start(),
     lager:set_loglevel(lager_console_backend, info),
     random:seed(erlang:now()),
-    setup(tcp).
+    setup(local).
 
 teardown(_Sess) ->
    % Sess:close(),
