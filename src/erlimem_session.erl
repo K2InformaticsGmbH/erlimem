@@ -446,9 +446,6 @@ setup(Type) ->
     if ((Type =:= local) orelse (Type =:= local_sec)) andalso (ImemRunning == false) ->
             application:load(imem),
             {ok, S} = application:get_env(imem, mnesia_schema_name),
-            {ok, Cwd} = file:get_cwd(),
-            NewSchema = Cwd ++ "/../" ++ atom_to_list(S),
-            application:set_env(mnesia, dir, NewSchema),
             S;
         true -> 'Imem'
     end,
