@@ -1,5 +1,7 @@
 -module(erlimem_cmds).
 
+-include("erlimem.hrl").
+
 -export([exec/2, recv_sync/2]).
 
 exec(CmdTuple, {tcp, Socket}) ->
@@ -23,19 +25,19 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
     try
         case Media of
             undefined ->
-                lager:debug("LOCAL ___TX___ ~p", [{Node, Mod, Fun, Args}]),
+                ?Debug("LOCAL ___TX___ ~p", [{Node, Mod, Fun, Args}]),
                 Res = case Node of
                     Node when Node =:= node() ->
                         ExecRes = apply(Mod, Fun, Args),
-                        lager:debug([session, self()], "~p MFA ~p -> ~p", [?MODULE, {Mod, Fun, Args}, ExecRes]),
+                        ?Debug([session, self()], "~p MFA ~p -> ~p", [?MODULE, {Mod, Fun, Args}, ExecRes]),
                         self() ! {resp, ExecRes};
                     _ ->
-                        lager:debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
+                        ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
                         self() ! rpc:call(Node, Mod, Fun, Args)
                 end,
                 if Fun =/= fetch_recs_async -> Res; true -> ok end;
             Socket ->
-                lager:debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
+                ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
                 gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args]))
         end
     catch
@@ -46,7 +48,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
 recv_sync({M, _}, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         Data ->
-            lager:debug("LOCAL ___RX___ ~p", [Data]),
+            ?Debug("LOCAL ___RX___ ~p", [Data]),
             Data
     end;
 recv_sync({tcp, Sock}, Bin) ->
@@ -55,17 +57,17 @@ recv_sync({tcp, Sock}, Bin) ->
         NewBin = << Bin/binary, Pkt/binary >>,
         case (catch binary_to_term(NewBin)) of
             {'EXIT', _Reason} ->
-                lager:debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
+                ?Debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
                 recv_sync({tcp, Sock}, NewBin);
             {error, Exception} ->
-                lager:error("~p throw ~p", [?MODULE, Exception]),
+                ?Error("~p throw ~p", [?MODULE, Exception]),
                 throw({{error, Exception}, erlang:get_stacktrace()});
             Term ->
-                lager:info("TCP ___RX___ ~p", [Term]),
+                ?Info("TCP ___RX___ ~p", [Term]),
                 Term
         end;
     {error, Reason} ->
-        lager:error("~p tcp error ~p", [?MODULE, Reason]),
-        lager:debug("~p tcp error stack ~p", [?MODULE, erlang:get_stacktrace()]),
+        ?Error("~p tcp error ~p", [?MODULE, Reason]),
+        ?Debug("~p tcp error stack ~p", [?MODULE, erlang:get_stacktrace()]),
         throw({{error, Reason}, erlang:get_stacktrace()})
     end.

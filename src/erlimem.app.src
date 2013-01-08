@@ -9,6 +9,6 @@
                  ]},
   {mod, { erlimem_app, []}},
   {env, [
-         {start_monitor, false}
+         {logging, info}
         ]}
  ]}.
