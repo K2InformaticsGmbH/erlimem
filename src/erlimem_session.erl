@@ -613,7 +613,7 @@ table_tail(Sess) ->
     io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
     Table = def,
     create_table(Sess),
-    insert_range(Sess, 20, atom_to_list(Table)),
+    insert_range(Sess, 5, atom_to_list(Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
