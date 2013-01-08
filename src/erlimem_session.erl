@@ -23,10 +23,10 @@
 
 -record(drvstmt, {
         buf,
-        ref,
         result,
         maxrows,
-        viewfun
+        completed = false,
+        tail = false
     }).
 
 %% session APIs
@@ -54,6 +54,7 @@
         , insert_rows/2
         , commit_modified/1
         , row_with_key/2
+        , fetch_close/1
 		]).
 
 %% gen_server callbacks
@@ -93,6 +94,7 @@ delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {m
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
 commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
+fetch_close(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {fetch_close, StmtRef}).
 start_async_read(                                Ctx) -> start_async_read([], Ctx).
 start_async_read(Opts,       {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
@@ -165,80 +167,96 @@ handle_call({close_statement, StmtRef}, From, #state{connection=Connection,seco=
     end,
     {noreply,State#state{pending=From, stmts=NewStmts}};
 
-handle_call({update_row, RowId, ColumId, Val, Ref}, From, #state{stmts=Stmts} = State) ->
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+handle_call({update_row, RowId, ColumId, Val, StmtRef}, From, #state{stmts=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
     {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
     NewRow = lists:sublist(Row,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,Row),
-    handle_call({modify_rows, upd, [NewRow], Ref}, From, State);
-handle_call({delete_row, RowId, Ref}, From, #state{stmts=Stmts} = State) ->
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    handle_call({modify_rows, upd, [NewRow], StmtRef}, From, State);
+handle_call({delete_row, RowId, StmtRef}, From, #state{stmts=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
     {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
-    handle_call({modify_rows, del, [Row], Ref}, From, State);
-handle_call({insert_row, Clm, Val, Ref}, From, #state{stmts=Stmts} = State) ->
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    handle_call({modify_rows, del, [Row], StmtRef}, From, State);
+handle_call({insert_row, Clm, Val, StmtRef}, From, #state{stmts=Stmts} = State) ->
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, result={columns, Clms}} = Stmt,
     ColNameList = [atom_to_list(C#ddColMap.name)||C<-Clms],
     ColumId = string:str(ColNameList,[Clm]),
     Row = [C#ddColMap.default||C<-Clms],
     NewRow = lists:sublist(Row,ColumId-1) ++ [Val] ++ lists:nthtail(ColumId,Row),
-    {reply,ok,NewState} = handle_call({modify_rows, ins, [NewRow], Ref}, From, State),
+    {reply,ok,NewState} = handle_call({modify_rows, ins, [NewRow], StmtRef}, From, State),
     {_,_,Count} = erlimem_buf:get_buffer_max(Buf),
     {reply,Count,NewState};
 
-handle_call({clear_buf, Ref}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({clear_buf, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
     NewBuf = erlimem_buf:clear(Buf),
-    NewStmts = lists:keyreplace(Ref, 1, Stmts, {Ref, Stmt#drvstmt{buf=NewBuf}}),
+    NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer,stmts=NewStmts}};
-handle_call({get_buffer_max, Ref}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
     Count = erlimem_buf:get_buffer_max(Buf),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Count,State#state{idle_timer=NewTimer}};
-handle_call({rows_from, Ref, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    {_, #drvstmt{completed = Completed, tail = Tail} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
-    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#drvstmt{buf=NewBuf}}),
+    if (Completed =:= false) andalso (Tail =:= false) ->
+        io:format(user, "prefetch...~n", []),
+        gen_server:cast(self(), {read_block_async, [], StmtRef});
+        true -> ok
+    end,
+    NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
-handle_call({prev_rows, Ref}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_prev_rows(Buf, MaxRows),
-    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#drvstmt{buf=NewBuf}}),
+    NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
-handle_call({next_rows, Ref}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    {_, #drvstmt{completed = Completed, tail = Tail} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
-    NewStmts = lists:keystore(Ref, 1, Stmts, {Ref, Stmt#drvstmt{buf=NewBuf}}),
+    if (Completed =:= false) andalso (Tail =:= false) ->
+        io:format(user, "prefetch...~n", []),
+        gen_server:cast(self(), {read_block_async, [], StmtRef});
+        true -> ok
+    end,
+    NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
-handle_call({modify_rows, Op, Rows, Ref}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({modify_rows, Op, Rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, Stmt} = lists:keyfind(Ref, 1, Stmts),
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
     erlimem_buf:modify_rows(Buf, Op, Rows),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer}};
-handle_call({row_with_key, Ref, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({row_with_key, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{buf=Buf}} = lists:keyfind(Ref, 1, Stmts),
+    {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
     [Row] = erlimem_buf:row_with_key(Buf, RowId),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Row,State#state{idle_timer=NewTimer}};
+handle_call({fetch_close, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer} = State) ->
+io:format(user, "~p fetch_close~n", [StmtRef]),
+    erlang:cancel_timer(Timer),
+    erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply,ok,State#state{idle_timer=NewTimer}};
 handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
@@ -293,9 +311,11 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
     end.
 
-handle_cast({read_block_async, Opts, StmtRef}, #state{connection=Connection, seco=SeCo}=State) ->
-    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),
-    {noreply, State};
+handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
+io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
+    {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),    
+    {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{tail=proplists:get_bool(tail_mode, Opts)}})}};
 handle_cast(Request, State) ->
     lager:error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
     {noreply, State}.
@@ -304,87 +324,79 @@ handle_cast(Request, State) ->
 % local / rpc
 %
 handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
-    NewStmts = case Resp of
+    case Resp of
             {error, Exception} ->
                 lager:error("~p throw ~p", [?MODULE, Exception]),
                 throw(Exception);
-            {ok, Clms, Fun, Ref} ->
-                lager:debug("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
-                Rslt = {ok, Clms, {?MODULE, Ref, self()}},
-                NStmts = lists:keystore(Ref, 1, Stmts,
-                            {Ref, #drvstmt{ result   = {columns, Clms}
-                                            , ref      = Ref
-                                            , buf      = erlimem_buf:create(Fun)
-                                            , maxrows  = MaxRows}
+            {ok, Clms, Fun, StmtRef} ->
+                lager:debug("~p RX ~p", [?MODULE, {Clms, Fun, StmtRef}]),
+                Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
+                NStmts = lists:keystore(StmtRef, 1, Stmts,
+                            {StmtRef, #drvstmt{ result   = {columns, Clms}
+                                              , buf      = erlimem_buf:create(Fun)
+                                              , maxrows  = MaxRows}
                             }),
                 gen_server:reply(Form, Rslt),
-                NStmts;
-            {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                lager:debug("LOCAL async __RX__ rows ~p For ~p", [length(Rows), Form]),
-                handle_info({StmtRef,{Rows,Completed}}, State),
-                Stmts;
+                {noreply, State#state{stmts=NStmts}};
             Term ->
                 lager:debug("LOCAL async __RX__ ~p For ~p", [Term, Form]),
                 gen_server:reply(Form, Term),
-                Stmts
-    end,
-    {noreply, State#state{stmts=NewStmts}};
+                {noreply, State}
+    end;
 handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
-    {_, #drvstmt{buf=Buffer}} = lists:keyfind(StmtRef, 1, Stmts),
+    {_, #drvstmt{buf=Buffer} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     case {Rows,Completed} of
-        {[], _} -> lager:info([session, self()], "~p async_resp []", [?MODULE]);
+        {[], _} ->
+            lager:info([session, self()], "~p async_resp []", [?MODULE]),
+            {noreply, State};
         {error, Result} ->
-            lager:error([session, self()], "~p async_resp ~p", [?MODULE, Result]);
-        {Rows, true} ->
-            erlimem_buf:insert_rows(Buffer, Rows);
-        {Rows, false} ->
-            erlimem_buf:insert_rows(Buffer, Rows);
-            %gen_server:cast(self(), {read_block_async, StmtRef}); % TODO - stop after first block receive
+            lager:error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
+            {noreply, State};
+        {Rows, Completed} when Completed =:= true; Completed =:= false ->
+            erlimem_buf:insert_rows(Buffer, Rows),
+            io:format(user, "~p Completed ~p~n", [StmtRef, Completed]),
+            NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
+            {noreply, State#state{stmts=NewStmts}};
         Unknown ->
-            lager:error([session, self()], "~p async_resp unknown resp ~p", [?MODULE, Unknown])
-    end,
-    {noreply, State};
+            lager:error([session, self()], "~p async_resp unknown resp ~p", [?MODULE, Unknown]),
+            {noreply, State}
+    end;
 
 % 
 % tcp
 %
 handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
     NewBin = << Buf/binary, Pkt/binary >>,
-    NewStatements =
+    NewState =
     case (catch binary_to_term(NewBin)) of
             {'EXIT', _Reason} ->
                 lager:debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
-                NewBuf = NewBin,
-                Stmts;
+                State#state{buf=NewBin};
             {error, Exception} ->
                 lager:error("~p throw ~p", [?MODULE, Exception]),
                 NewBuf = <<>>,
                 throw(Exception);
-            {ok, Clms, Fun, Ref} ->
-                lager:debug("~p RX ~p", [?MODULE, {Clms, Fun, Ref}]),
-                Rslt = {ok, Clms, {?MODULE, Ref, self()}},
-                NStmts = lists:keystore(Ref, 1, Stmts,
-                            {Ref, #drvstmt{ result   = {columns, Clms}
-                                            , ref      = Ref
-                                            , buf      = erlimem_buf:create(Fun)
-                                            , maxrows  = MaxRows}
+            {ok, Clms, Fun, StmtRef} ->
+                lager:debug("~p RX ~p", [?MODULE, {Clms, Fun, StmtRef}]),
+                Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
+                NStmts = lists:keystore(StmtRef, 1, Stmts,
+                            {StmtRef, #drvstmt{ result   = {columns, Clms}
+                                              , buf      = erlimem_buf:create(Fun)
+                                              , maxrows  = MaxRows}
                             }),
                 gen_server:reply(Form, Rslt),
-                NewBuf = <<>>,
-                NStmts;
+                State#state{buf= <<>>, stmts=NStmts};
             {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
                 lager:info("TCP async __RX__ rows ~p For ~p", [length(Rows), Form]),
-                NewBuf = <<>>,
-                handle_info({StmtRef,{Rows,Completed}}, State),
-                Stmts;
+                {_, NState} = handle_info({StmtRef,{Rows,Completed}}, State),
+                NState#state{buf= <<>>};
             Term ->
                 lager:info("TCP async __RX__ ~p For ~p", [Term, Form]),
                 gen_server:reply(Form, Term),
-                NewBuf = <<>>,
-                Stmts
+                State#state{buf= <<>>}
     end,
     inet:setopts(S,[{active,once}]),
-    {noreply, State#state{buf=NewBuf, stmts=NewStatements}};
+    {noreply, NewState};
 
 %
 % MNESIA Events
@@ -468,7 +480,7 @@ setup() ->
     erlimem:start(),
     lager:set_loglevel(lager_console_backend, info),
     random:seed(erlang:now()),
-    setup(tcp).
+    setup(local).
 
 teardown(_Sess) ->
    % Sess:close(),
@@ -604,13 +616,19 @@ table_tail(Sess) ->
     io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
     Table = def,
     create_table(Sess),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
+    insert_range(Sess, 20, atom_to_list(Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
+    Statement:start_async_read(),
+    timer:sleep(100),
+    io:format(user, "receiving sync...~n", []),
+    {Rows,_,_} = Statement:next_rows(),
+    io:format(user, "received ~p~n", [length(Rows)]),
     timer:sleep(100),
     Statement:start_async_read([{tail_mode,true}]),
     timer:sleep(100),
     insert_async(Sess, 20, atom_to_list(Table)),
-    io:format(user, "receiving...~n", []),
+    io:format(user, "receiving async...~n", []),
     recv_delay(Statement, 10),
     Statement:close(),
     io:format(user, "statement closed~n", []),
