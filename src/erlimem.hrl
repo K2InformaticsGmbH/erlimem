@@ -16,14 +16,14 @@
     {ok, debug} ->
         case __L of
         dbg -> io:format(user, "[debug] " ++ __F ++ "~n", __A);
-        nfo -> io:format(user, "[debug] " ++ __F ++ "~n", __A);
-        err -> io:format(user, "[debug] " ++ __F ++ "~n", __A);
+        nfo -> io:format(user, "[info] " ++ __F ++ "~n", __A);
+        err -> io:format(user, "[error] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     {ok, info} ->
         case __L of
         nfo -> io:format(user, "[info] " ++ __F ++ "~n", __A);
-        err -> io:format(user, "[info] " ++ __F ++ "~n", __A);
+        err -> io:format(user, "[error] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     {ok, error} ->

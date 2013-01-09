@@ -147,6 +147,11 @@ logs(_Sess) ->
     ?Info("This is should not appear"),
     ?Error("This is a error log"),
 
+    erlimem:loglevel(disabled),
+    ?Debug("This is should not appear"),
+    ?Info("This is should not appear"),
+    ?Error("This is should not appear"),
+
     io:format(user, "------------------------------------------------------------~n",[]).
 
 all_tables(Sess) ->
