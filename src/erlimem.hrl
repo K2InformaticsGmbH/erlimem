@@ -1,6 +1,15 @@
 -define(IMEM_TIMEOUT, 1000).
 -define(SESSION_TIMEOUT, 3600000).
 
+-define(T,
+    fun() ->
+        {_, _, Micro} = erlang:now(),
+        Ms = Micro / 1000000,
+        {H,M,S} = erlang:time(),
+        lists:flatten(io_lib:format("~2..0B:~2..0B:~2..0B.~p", [H,M,S,Ms]))
+    end
+).
+
 -ifndef(NOLOGGING).
 -define(LOG(__L,__M,__F,__A),
     case application:get_env(erlimem, logging) of
@@ -26,7 +35,7 @@
     end
 ).
 -else.
--define(LOG(__L, __M,__F,__A), ok = ok).
+-define(LOG(__L,__M,__F,__A), ok = ok).
 -endif.
 
 -define(Debug(__M,__F,__A), ?LOG(dbg, __M,__F,__A)).

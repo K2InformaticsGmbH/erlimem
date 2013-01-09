@@ -4,7 +4,9 @@
 -define(SESSMOD, erlimem_session).
 
 %% Application callbacks
--export([start/0, stop/0, open/3]).
+-export([start/0, stop/0, open/3, loglevel/1]).
+
+loglevel(L) -> application:set_env(erlimem, logging, L).
 
 start() ->  application:start(?MODULE).
 stop()  ->  application:stop(?MODULE).
@@ -94,7 +96,8 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [
-                fun all_tables/1
+                fun logs/1
+                , fun all_tables/1
                 , fun table_create_select_drop/1
                 , fun table_modify/1
                 , fun table_tail/1
@@ -124,6 +127,26 @@ bad_con_reject(_) ->
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(local_sec, {Schema}, BadCred)),
     timer:sleep(1000),
     io:format(user, "connections rejected properly~n",[]),
+    io:format(user, "------------------------------------------------------------~n",[]).
+
+logs(_Sess) ->
+    io:format(user, "--------- enable diable change log level (logs) ------------~n",[]),
+
+    erlimem:loglevel(debug),
+    ?Debug("This is a debug log"),
+    ?Info("This is a info log"),
+    ?Error("This is a error log"),
+
+    erlimem:loglevel(info),
+    ?Debug("This is should not appear"),
+    ?Info("This is a info log"),
+    ?Error("This is a error log"),
+
+    erlimem:loglevel(error),
+    ?Debug("This is should not appear"),
+    ?Info("This is should not appear"),
+    ?Error("This is a error log"),
+
     io:format(user, "------------------------------------------------------------~n",[]).
 
 all_tables(Sess) ->
