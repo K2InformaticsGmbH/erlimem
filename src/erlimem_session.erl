@@ -26,7 +26,7 @@
         result,
         maxrows,
         completed = false,
-        tail = false
+        fetchopts = []
     }).
 
 %% session APIs
@@ -198,12 +198,12 @@ handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmt
     {reply,Count,State#state{idle_timer=NewTimer}};
 handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{completed = Completed, tail = Tail} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
-    if (Completed =:= false) andalso (Tail =:= false) ->
+    if Completed =:= false ->
         io:format(user, "prefetch...~n", []),
-        gen_server:cast(self(), {read_block_async, [], StmtRef});
+        gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
@@ -219,12 +219,12 @@ handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{completed = Completed, tail = Tail} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
-    if (Completed =:= false) andalso (Tail =:= false) ->
+    if Completed =:= false ->
         io:format(user, "prefetch...~n", []),
-        gen_server:cast(self(), {read_block_async, [], StmtRef});
+        gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
@@ -307,7 +307,7 @@ handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Co
 io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),    
-    {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{tail=proplists:get_bool(tail_mode, Opts)}})}};
+    {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{fetchopts=Opts}})}};
 handle_cast(Request, State) ->
     ?Error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
     {noreply, State}.

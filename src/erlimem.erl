@@ -37,7 +37,7 @@ setup(Type) ->
             S;
         true -> 'Imem'
     end,
-    application:set_env(imem, mnesia_node_type, ram),
+    application:set_env(imem, mnesia_node_type, disc),
     application:start(imem),
     ?Debug("TEST schema ~p", [Schema]),
     case Type of
@@ -70,7 +70,7 @@ setup_con() ->
     {ok, Cwd} = file:get_cwd(),
     NewSchema = Cwd ++ "/../" ++ atom_to_list(S),
     application:set_env(mnesia, dir, NewSchema),
-    application:set_env(imem, mnesia_node_type, ram),
+    application:set_env(imem, mnesia_node_type, disc),
     application:start(imem).
 
 teardown_con(_) ->
@@ -97,9 +97,9 @@ db_test_() ->
         fun teardown/1,
         {with, [
                 fun logs/1
-                , fun all_tables/1
-                , fun table_create_select_drop/1
-                , fun table_modify/1
+                %, fun all_tables/1
+                %, fun table_create_select_drop/1
+                %, fun table_modify/1
                 , fun table_tail/1
         ]}
         }
@@ -213,19 +213,18 @@ table_tail(Sess) ->
     io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
     Table = def,
     create_table(Sess),
-    insert_range(Sess, 5, atom_to_list(Table)),
+    insert_range(Sess, 11, atom_to_list(Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(100),
     io:format(user, "receiving sync...~n", []),
     {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "received ~p~n", [length(Rows)]),
+    io:format(user, "received ~p~n", [Rows]),
     timer:sleep(100),
     Statement:start_async_read([{tail_mode,true}]),
-    timer:sleep(100),
-    insert_async(Sess, 20, atom_to_list(Table)),
     io:format(user, "receiving async...~n", []),
+    insert_async(Sess, 20, atom_to_list(Table)),
     recv_delay(Statement, 10),
     Statement:close(),
     io:format(user, "statement closed~n", []),
@@ -244,8 +243,9 @@ drop_table(Sess) ->
 recv_delay(_, 0) -> ok;
 recv_delay(Statement, Count) ->
     timer:sleep(50),
+    io:format(user, "receiving async...~n", []),
     {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "received ~p~n", [length(Rows)]),
+    io:format(user, "received ~p~n", [Rows]),
     recv_delay(Statement, Count-1).
 
 insert_async(Sess, N, TableName) ->
