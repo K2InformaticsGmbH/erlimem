@@ -244,6 +244,11 @@ table_tail(Sess) ->
     io:format(user, "received ~p~n", [Rows]),
     timer:sleep(100),
     Statement:start_async_read([{tail_mode,true}]),
+
+io:format(user, "~n>>>>> TEMPORARY TO FIX SERVER BUG ***** ~n~n", []),
+read_all(Statement, [1]),
+io:format(user, "~n<<<<< TEMPORARY TO FIX SERVER BUG ***** ~n~n", []),
+
     io:format(user, "receiving async...~n", []),
     %erlimem:loglevel(debug),
     insert_async(Sess, 20, atom_to_list(Table)),
@@ -262,10 +267,15 @@ drop_table(Sess) ->
     ok = Sess:exec("drop table def;"),
     io:format(user, "drop table~n", []).
 
+read_all(_, []) -> ok;
+read_all(Statement, _) ->
+    {Rows,_,_} = Statement:next_rows(),
+    io:format(user, "received ~p~n", [Rows]),
+    read_all(Statement, Rows).
+
 recv_delay(_, 0) -> ok;
 recv_delay(Statement, Count) ->
     timer:sleep(50),
-    io:format(user, "receiving async...~n", []),
     {Rows,_,_} = Statement:next_rows(),
     io:format(user, "received ~p~n", [Rows]),
     recv_delay(Statement, Count-1).
