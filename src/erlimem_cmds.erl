@@ -64,7 +64,7 @@ recv_sync({tcp, Sock}, Bin) ->
                 throw({{error, Exception}, erlang:get_stacktrace()});
             Term ->
                 ?Info("TCP ___RX___ ~p", [Term]),
-                Term
+                {resp, Term}
         end;
     {error, Reason} ->
         ?Error("~p tcp error ~p", [?MODULE, Reason]),
