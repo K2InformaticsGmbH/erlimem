@@ -28,6 +28,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
                 ?Debug("LOCAL ___TX___ ~p", [{Node, Mod, Fun, Args}]),
                 Res = case Node of
                     Node when Node =:= node() ->
+                        ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
                         ExecRes = apply(Mod, Fun, Args),
                         ?Debug([session, self()], "~p MFA ~p -> ~p", [?MODULE, {Mod, Fun, Args}, ExecRes]),
                         self() ! {resp, ExecRes};

@@ -100,6 +100,7 @@ db_test_() ->
                 %, fun all_tables/1
                 %, fun table_create_select_drop/1
                 %, fun table_modify/1
+                , fun simul_insert/1
                 , fun table_tail/1
         ]}
         }
@@ -209,6 +210,26 @@ table_modify(Sess) ->
     drop_table(Sess),
     io:format(user, "------------------------------------------------------------~n",[]).
 
+simul_insert(Sess) ->
+    io:format(user, "------------ simultaneous insert (simul_insert) ------------~n", []),
+    Table = def,
+    create_table(Sess),
+    insert_range(Sess, 11, atom_to_list(Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 10),
+    io:format(user, "select ~p~n", [{Clms, Statement}]),
+    Statement:start_async_read(),
+    timer:sleep(100),
+    io:format(user, "receiving sync...~n", []),
+    {Rows,_,_} = Statement:next_rows(),
+    io:format(user, "received ~p~n", [Rows]),
+    io:format(user, "receiving async...~n", []),
+    insert_async(Sess, 20, atom_to_list(Table)),
+    recv_delay(Statement, 10),
+    Statement:close(),
+    io:format(user, "statement closed~n", []),
+    drop_table(Sess),
+    io:format(user, "------------------------------------------------------------~n",[]).
+
 table_tail(Sess) ->
     io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
     Table = def,
@@ -224,6 +245,7 @@ table_tail(Sess) ->
     timer:sleep(100),
     Statement:start_async_read([{tail_mode,true}]),
     io:format(user, "receiving async...~n", []),
+    %erlimem:loglevel(debug),
     insert_async(Sess, 20, atom_to_list(Table)),
     recv_delay(Statement, 10),
     Statement:close(),
