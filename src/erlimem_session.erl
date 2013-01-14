@@ -202,7 +202,7 @@ handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=St
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
     if Completed =:= false ->
-        io:format(user, "prefetch...~n", []),
+%        io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -223,7 +223,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
     if Completed =:= false ->
-        io:format(user, "prefetch...~n", []),
+%        io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -304,7 +304,7 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
     end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
-io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
+%io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),    
     {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{fetchopts=Opts}})}};
@@ -346,7 +346,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
             {noreply, State};
         {Rows, Completed} when Completed =:= true; Completed =:= false ->
             erlimem_buf:insert_rows(Buffer, Rows),
-            io:format(user, "~p Completed ~p~n", [StmtRef, Completed]),
+%            io:format(user, "~p Completed ~p~n", [StmtRef, Completed]),
             NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
             {noreply, State#state{stmts=NewStmts}};
         Unknown ->

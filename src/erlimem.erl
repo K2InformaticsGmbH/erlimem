@@ -52,7 +52,7 @@ setup() ->
     io:format(user, "+-----------------------------------------------------------+~n",[]),
     erlimem:start(),
     random:seed(erlang:now()),
-    setup(local).
+    setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
@@ -97,11 +97,11 @@ db_test_() ->
         fun teardown/1,
         {with, [
                 fun logs/1
-                %, fun all_tables/1
+                , fun all_tables/1
                 %, fun table_create_select_drop/1
                 %, fun table_modify/1
-                , fun simul_insert/1
-                , fun table_tail/1
+                %, fun simul_insert/1
+                %, fun table_tail/1
         ]}
         }
     }.
@@ -245,10 +245,6 @@ table_tail(Sess) ->
     timer:sleep(100),
     Statement:start_async_read([{tail_mode,true}]),
 
-io:format(user, "~n>>>>> TEMPORARY TO FIX SERVER BUG ***** ~n~n", []),
-read_all(Statement, [1]),
-io:format(user, "~n<<<<< TEMPORARY TO FIX SERVER BUG ***** ~n~n", []),
-
     io:format(user, "receiving async...~n", []),
     %erlimem:loglevel(debug),
     insert_async(Sess, 20, atom_to_list(Table)),
@@ -266,12 +262,6 @@ create_table(Sess) ->
 drop_table(Sess) ->
     ok = Sess:exec("drop table def;"),
     io:format(user, "drop table~n", []).
-
-read_all(_, []) -> ok;
-read_all(Statement, _) ->
-    {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "received ~p~n", [Rows]),
-    read_all(Statement, Rows).
 
 recv_delay(_, 0) -> ok;
 recv_delay(Statement, Count) ->
