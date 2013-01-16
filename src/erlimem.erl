@@ -24,6 +24,7 @@ open(Type, Opts, Cred) ->
 % EUnit tests --
 
 -include_lib("eunit/include/eunit.hrl").
+-define(Table, test_table_123).
 
 setup(Type) -> 
     User = <<"admin">>,
@@ -37,7 +38,7 @@ setup(Type) ->
             S;
         true -> 'Imem'
     end,
-    application:set_env(imem, mnesia_node_type, disc),
+    application:set_env(imem, mnesia_node_type, ram),
     application:start(imem),
     ?Debug("TEST schema ~p", [Schema]),
     case Type of
@@ -70,7 +71,7 @@ setup_con() ->
     {ok, Cwd} = file:get_cwd(),
     NewSchema = Cwd ++ "/../" ++ atom_to_list(S),
     application:set_env(mnesia, dir, NewSchema),
-    application:set_env(imem, mnesia_node_type, disc),
+    application:set_env(imem, mnesia_node_type, ram),
     application:start(imem).
 
 teardown_con(_) ->
@@ -171,10 +172,9 @@ all_tables(Sess) ->
 
 table_create_select_drop(Sess) ->
     io:format(user, "-- create insert select drop (table_create_select_drop) ----~n", []),
-    Table = def,
-    create_table(Sess),
-    insert_range(Sess, 20, atom_to_list(Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
+    create_table(Sess, atom_to_list(?Table)),
+    insert_range(Sess, 20, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
@@ -187,11 +187,10 @@ table_create_select_drop(Sess) ->
 
 table_modify(Sess) ->
     io:format(user, "------- update insert new delete rows (table_modify) -------~n",[]),
-    Table = def,
-    create_table(Sess),
+    create_table(Sess, atom_to_list(?Table)),
     NumRows = 10,
-    insert_range(Sess, NumRows, atom_to_list(Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 100),
+    insert_range(Sess, NumRows, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(1000),
@@ -212,10 +211,9 @@ table_modify(Sess) ->
 
 simul_insert(Sess) ->
     io:format(user, "------------ simultaneous insert (simul_insert) ------------~n", []),
-    Table = def,
-    create_table(Sess),
-    insert_range(Sess, 11, atom_to_list(Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 10),
+    create_table(Sess, atom_to_list(?Table)),
+    insert_range(Sess, 11, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(100),
@@ -223,7 +221,7 @@ simul_insert(Sess) ->
     {Rows,_,_} = Statement:next_rows(),
     io:format(user, "received ~p~n", [Rows]),
     io:format(user, "receiving async...~n", []),
-    insert_async(Sess, 20, atom_to_list(Table)),
+    insert_async(Sess, 20, atom_to_list(?Table)),
     recv_delay(Statement, 10),
     Statement:close(),
     io:format(user, "statement closed~n", []),
@@ -232,10 +230,9 @@ simul_insert(Sess) ->
 
 table_tail(Sess) ->
     io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
-    Table = def,
-    create_table(Sess),
-    insert_range(Sess, 11, atom_to_list(Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(Table)++";", 10),
+    create_table(Sess, atom_to_list(?Table)),
+    insert_range(Sess, 11, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
     Statement:start_async_read(),
     timer:sleep(100),
@@ -247,15 +244,15 @@ table_tail(Sess) ->
 
     io:format(user, "receiving async...~n", []),
     %erlimem:loglevel(debug),
-    insert_async(Sess, 20, atom_to_list(Table)),
+    insert_async(Sess, 20, atom_to_list(?Table)),
     recv_delay(Statement, 10),
     Statement:close(),
     io:format(user, "statement closed~n", []),
     drop_table(Sess),
     io:format(user, "------------------------------------------------------------~n",[]).
 
-create_table(Sess) ->
-    Sql = "create table def (col1 integer, col2 varchar2);",
+create_table(Sess, TableName) ->
+    Sql = "create table "++TableName++" (col1 integer, col2 varchar2);",
     Res = Sess:exec(Sql),
     io:format(user, "~p -> ~p~n", [Sql, Res]).
 
