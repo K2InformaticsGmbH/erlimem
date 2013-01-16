@@ -98,10 +98,10 @@ db_test_() ->
         {with, [
                 fun logs/1
                 , fun all_tables/1
-                %, fun table_create_select_drop/1
-                %, fun table_modify/1
-                %, fun simul_insert/1
-                %, fun table_tail/1
+                , fun table_create_select_drop/1
+                , fun table_modify/1
+                , fun simul_insert/1
+                , fun table_tail/1
         ]}
         }
     }.
