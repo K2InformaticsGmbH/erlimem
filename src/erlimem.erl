@@ -17,8 +17,8 @@ open(Type, Opts, Cred) ->
     _ -> ok
     end,
     case gen_server:start(?SESSMOD, [Type, Opts, Cred], []) of
-        {ok, Pid} -> {?SESSMOD, Pid};
-        Other -> Other
+        {ok, Pid} -> {ok, {?SESSMOD, Pid}};
+        {error, Error} -> {error, {'ConnectException', {"unable to connect", Error}}}
     end.
 
 % EUnit tests --
@@ -41,11 +41,12 @@ setup(Type) ->
     application:set_env(imem, mnesia_node_type, ram),
     application:start(imem),
     ?Debug("TEST schema ~p", [Schema]),
-    case Type of
+    {ok, Sess} = case Type of
         tcp         -> erlimem:open(tcp, {localhost, 8124, Schema}, Cred);
         local_sec   -> erlimem:open(local_sec, {Schema}, Cred);
         local       -> erlimem:open(local, {Schema}, Cred)
-    end.
+    end,
+    Sess.
 
 setup() ->
     io:format(user, "+-----------------------------------------------------------+~n",[]),
@@ -111,10 +112,10 @@ all_cons(_) ->
     io:format(user, "--------- authentication success for tcp/rpc/local ----------~n",[]),
     Schema = 'Imem',
     Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
-    ?assertMatch({?SESSMOD, _}, erlimem:open(rpc, {node(), Schema}, Cred)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(tcp, {localhost, 8124, Schema}, Cred)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local_sec, {Schema}, Cred)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local, {Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, Cred)),
     io:format(user, "connected successfully~n",[]),
     io:format(user, "------------------------------------------------------------~n",[]).
 
@@ -161,7 +162,7 @@ all_tables(Sess) ->
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
     io:format(user, "~p -> ~p~n", [Sql, {Clms, Statement}]),
-    Statement:start_async_read(),
+    Statement:start_async_read([]),
     io:format(user, "receiving...~n", []),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
@@ -176,13 +177,13 @@ table_create_select_drop(Sess) ->
     insert_range(Sess, 20, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    Statement:start_async_read([]),
     timer:sleep(1000),
     io:format(user, "receiving...~n", []),
     {Rows,_,_} = Statement:next_rows(),
     Statement:close(),
     io:format(user, "received ~p~n", [length(Rows)]),
-    drop_table(Sess),
+    drop_table(Sess, atom_to_list(?Table)),
     io:format(user, "------------------------------------------------------------~n",[]).
 
 table_modify(Sess) ->
@@ -192,7 +193,7 @@ table_modify(Sess) ->
     insert_range(Sess, NumRows, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    Statement:start_async_read([]),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
     io:format(user, "original table from db ~p~n", [Rows]),
@@ -201,12 +202,12 @@ table_modify(Sess) ->
     Statement:insert_rows(insert_random(length(Rows)-1,5,[])),   % insert some rows in buffer
     Rows9 = Statement:commit_modified(),
     io:format(user, "changed rows ~p~n", [Rows9]),
-    Statement:start_async_read(),
+    Statement:start_async_read([]),
     timer:sleep(1000),
     {NewRows1,_,_} = Statement:next_rows(),
     io:format(user, "modified table from db ~p~n", [NewRows1]),
     Statement:close(),
-    drop_table(Sess),
+    drop_table(Sess, atom_to_list(?Table)),
     io:format(user, "------------------------------------------------------------~n",[]).
 
 simul_insert(Sess) ->
@@ -215,7 +216,7 @@ simul_insert(Sess) ->
     insert_range(Sess, 11, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    Statement:start_async_read([]),
     timer:sleep(100),
     io:format(user, "receiving sync...~n", []),
     {Rows,_,_} = Statement:next_rows(),
@@ -225,7 +226,7 @@ simul_insert(Sess) ->
     recv_delay(Statement, 10),
     Statement:close(),
     io:format(user, "statement closed~n", []),
-    drop_table(Sess),
+    drop_table(Sess, atom_to_list(?Table)),
     io:format(user, "------------------------------------------------------------~n",[]).
 
 table_tail(Sess) ->
@@ -234,7 +235,7 @@ table_tail(Sess) ->
     insert_range(Sess, 11, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    Statement:start_async_read([]),
     timer:sleep(100),
     io:format(user, "receiving sync...~n", []),
     {Rows,_,_} = Statement:next_rows(),
@@ -248,7 +249,7 @@ table_tail(Sess) ->
     recv_delay(Statement, 10),
     Statement:close(),
     io:format(user, "statement closed~n", []),
-    drop_table(Sess),
+    drop_table(Sess, atom_to_list(?Table)),
     io:format(user, "------------------------------------------------------------~n",[]).
 
 create_table(Sess, TableName) ->
@@ -256,8 +257,8 @@ create_table(Sess, TableName) ->
     Res = Sess:exec(Sql),
     io:format(user, "~p -> ~p~n", [Sql, Res]).
 
-drop_table(Sess) ->
-    ok = Sess:exec("drop table def;"),
+drop_table(Sess, Table) ->
+    ?assertEqual(ok, Sess:exec("drop table "++Table++";")),
     io:format(user, "drop table~n", []).
 
 recv_delay(_, 0) -> ok;

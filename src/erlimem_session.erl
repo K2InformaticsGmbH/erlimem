@@ -39,8 +39,7 @@
 		]).
 
 % statement APIs
--export([start_async_read/1
-        , start_async_read/2
+-export([ start_async_read/2
         , get_buffer_max/1
         , rows_from/2
         , prev_rows/1
@@ -87,7 +86,6 @@ insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {m
 commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
 fetch_close(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {fetch_close, StmtRef}).
-start_async_read(                                Ctx) -> start_async_read([], Ctx).
 start_async_read(Opts,       {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
     gen_server:cast(Pid, {read_block_async, Opts, StmtRef}).
@@ -366,26 +364,34 @@ handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts
                 State#state{buf=NewBin};
             {error, Exception} ->
                 ?Error("~p throw ~p", [?MODULE, Exception]),
-                NewBuf = <<>>,
-                throw(Exception);
-            {ok, Clms, Fun, StmtRef} ->
-                ?Debug("~p RX ~p", [?MODULE, {Clms, Fun, StmtRef}]),
-                Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
-                NStmts = lists:keystore(StmtRef, 1, Stmts,
-                            {StmtRef, #drvstmt{ result   = {columns, Clms}
-                                              , buf      = erlimem_buf:create(Fun)
-                                              , maxrows  = MaxRows}
-                            }),
-                gen_server:reply(Form, Rslt),
-                State#state{buf= <<>>, stmts=NStmts};
-            {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                ?Info("TCP async __RX__ rows ~p For ~p", [length(Rows), Form]),
-                {_, NState} = handle_info({StmtRef,{Rows,Completed}}, State),
-                NState#state{buf= <<>>};
+                gen_server:reply(Form,  {error, Exception}),
+                State;
             Term ->
-                ?Info("TCP async __RX__ ~p For ~p", [Term, Form]),
-                gen_server:reply(Form, Term),
-                State#state{buf= <<>>}
+                NState =
+                case Term of
+                    {ok, Clms, Fun, StmtRef} ->
+                        ?Debug("~p RX ~p", [?MODULE, {Clms, Fun, StmtRef}]),
+                        Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
+                        NStmts = lists:keystore(StmtRef, 1, Stmts,
+                                    {StmtRef, #drvstmt{ result   = {columns, Clms}
+                                                      , buf      = erlimem_buf:create(Fun)
+                                                      , maxrows  = MaxRows}
+                                    }),
+                        gen_server:reply(Form, Rslt),
+                        State#state{stmts=NStmts};
+                    {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                        ?Debug("TCP async __RX__ rows ~p For ~p", [length(Rows), Form]),
+                        {_, NS} = handle_info({StmtRef,{Rows,Completed}}, State),
+                        NS;
+                    _ ->
+                        ?Debug("TCP async __RX__ ~p For ~p", [Term, Form]),
+                        gen_server:reply(Form, Term),
+                        State
+                end,
+                TSize = byte_size(term_to_binary(Term)),
+                RestSize = byte_size(NewBin)-TSize,
+                {noreply, NwState} = handle_info({tcp,S,binary_part(NewBin, {TSize, RestSize})}, NState#state{buf= <<>>}),
+                NwState
     end,
     inet:setopts(S,[{active,once}]),
     {noreply, NewState};
