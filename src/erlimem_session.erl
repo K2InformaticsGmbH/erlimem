@@ -182,8 +182,8 @@ handle_call({insert_row, Clm, Val, StmtRef}, From, #state{stmts=Stmts} = State) 
 handle_call({clear_buf, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf} = Stmt,
-    NewBuf = erlimem_buf:clear(Buf),
+    #drvstmt{buf=Buf,completed=Completed} = Stmt,
+    NewBuf = if Completed =:= true -> erlimem_buf:clear(Buf); true -> Buf end,
     NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer,stmts=NewStmts}};
@@ -337,14 +337,15 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
     {_, #drvstmt{buf=Buffer} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     case {Rows,Completed} of
         {[], _} ->
-            ?Info([session, self()], "~p async_resp []", [?MODULE]),
+            ?Debug([session, self()], "~p async_resp []", [?MODULE]),
             {noreply, State};
         {error, Result} ->
             ?Error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
             {noreply, State};
         {Rows, Completed} when Completed =:= true; Completed =:= false ->
             erlimem_buf:insert_rows(Buffer, Rows),
-%            io:format(user, "~p Completed ~p~n", [StmtRef, Completed]),
+            Count = erlimem_buf:get_buffer_max(Buffer),
+            ?Info("____ ~p inserted ~p total ~p status ~p~n", [StmtRef, length(Rows), Count, Completed]),
             NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
             {noreply, State#state{stmts=NewStmts}};
         Unknown ->
