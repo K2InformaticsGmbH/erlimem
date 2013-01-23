@@ -269,7 +269,6 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
 
 handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer
-                                        ,stmts=Stmts
                                         ,schema=Schema
                                         ,seco=SeCo
                                         ,event_pids=EvtPids} = State) ->
@@ -296,7 +295,7 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             ?Debug("~p", [ST]),
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
             {reply, E, State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}};
-        Result ->
+        _Result ->
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
             {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
     end.
@@ -304,7 +303,12 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
 %io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),    
+    #drvstmt{completed = Completed} = Stmt,
+    if Completed =:= true ->
+        erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection);
+        true -> ok
+    end,
+    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),
     {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{fetchopts=Opts}})}};
 handle_cast(Request, State) ->
     ?Error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
@@ -345,7 +349,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
         {Rows, Completed} when Completed =:= true; Completed =:= false ->
             erlimem_buf:insert_rows(Buffer, Rows),
             Count = erlimem_buf:get_buffer_max(Buffer),
-            ?Info("____ ~p inserted ~p total ~p status ~p~n", [StmtRef, length(Rows), Count, Completed]),
+            ?Debug("____ ~p inserted ~p total ~p status ~p~n", [StmtRef, length(Rows), Count, Completed]),
             NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
             {noreply, State#state{stmts=NewStmts}};
         Unknown ->
@@ -356,7 +360,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
 % 
 % tcp
 %
-handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
+handle_info({tcp,S,Pkt}, #state{buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
     NewBin = << Buf/binary, Pkt/binary >>,
     NewState =
     case (catch binary_to_term(NewBin)) of
