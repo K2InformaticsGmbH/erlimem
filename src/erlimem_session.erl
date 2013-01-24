@@ -199,8 +199,8 @@ handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=St
     {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
-    if Completed =:= false ->
-%        io:format(user, "prefetch...~n", []),
+    if (Completed =:= false) andalso (Opts =:= []) ->
+        io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -220,8 +220,8 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
-    if Completed =:= false ->
-%        io:format(user, "prefetch...~n", []),
+    if (Completed =:= false) andalso (Opts =:= []) ->
+        io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -301,10 +301,11 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
     end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
-%io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
+    ?Info("~p fetch_recs_async ~p", [?MODULE, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{completed = Completed} = Stmt,
     if Completed =:= true ->
+        ?Info("~p  - fetch_close ~p", [?MODULE, Opts]),
         erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection);
         true -> ok
     end,
@@ -347,6 +348,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
             ?Error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
             {noreply, State};
         {Rows, Completed} when Completed =:= true; Completed =:= false ->
+            ?Info("__RX__ rows ~p status ~p", [length(Rows), Completed]),
             erlimem_buf:insert_rows(Buffer, Rows),
             Count = erlimem_buf:get_buffer_max(Buffer),
             ?Debug("____ ~p inserted ~p total ~p status ~p~n", [StmtRef, length(Rows), Count, Completed]),
@@ -385,11 +387,10 @@ handle_info({tcp,S,Pkt}, #state{buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRo
                         gen_server:reply(Form, Rslt),
                         State#state{stmts=NStmts};
                     {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                        ?Debug("TCP async __RX__ rows ~p For ~p", [length(Rows), Form]),
                         {_, NS} = handle_info({StmtRef,{Rows,Completed}}, State),
                         NS;
                     _ ->
-                        ?Debug("TCP async __RX__ ~p For ~p", [Term, Form]),
+                        ?Info("TCP async __RX__ ~p For ~p", [Term, Form]),
                         gen_server:reply(Form, Term),
                         State
                 end,
@@ -433,6 +434,8 @@ handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:
             ?Debug([session, self()], "~p # ~p <- ~p", [?MODULE, Found, Evt])
     end,
     {noreply, State};
+
+
 handle_info(timeout, State) ->
     ?Debug([session, self()], "~p close on timeout", [?MODULE]),
     close({?MODULE, self()}),
