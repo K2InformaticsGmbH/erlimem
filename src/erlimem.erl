@@ -200,8 +200,8 @@ table_modify(Sess) ->
     Statement:update_rows(update_random(length(Rows)-1,5,Rows)), % modify some rows in buffer
     Statement:delete_rows(update_random(length(Rows)-1,5,Rows)), % delete some rows in buffer
     Statement:insert_rows(insert_random(length(Rows)-1,5,[])),   % insert some rows in buffer
-    Rows9 = Statement:commit_modified(),
-    io:format(user, "changed rows ~p~n", [Rows9]),
+    ok = Statement:commit_modified(),
+    io:format(user, "commit ok~n", []),
     Statement:start_async_read([]),
     timer:sleep(1000),
     {NewRows1,_,_} = Statement:next_rows(),

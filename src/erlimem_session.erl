@@ -247,17 +247,15 @@ io:format(user, "~p fetch_close~n", [StmtRef]),
     erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer}};
-handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({commit_modified, StmtRef}, From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
     Rows = erlimem_buf:get_modified_rows(Buf),
     ?Debug([session, self()], "~p modified rows ~p", [?MODULE, Rows]),
-    Result =
     try
         erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
         erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
-        erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
-        Rows
+        erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection)
     catch
         _Class:{Res,ST} ->
             ?Error([session, self()], "~p ~p", [?MODULE, Res]),
@@ -265,7 +263,7 @@ handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco
             {error, Res}
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Result,State#state{idle_timer=NewTimer}};
+    {noreply,State#state{idle_timer=NewTimer,pending=From}};
 
 handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer
@@ -348,7 +346,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
             ?Error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
             {noreply, State};
         {Rows, Completed} when Completed =:= true; Completed =:= false ->
-            ?Info("__RX__ rows ~p status ~p", [length(Rows), Completed]),
+            ?Debug("__RX__ rows ~p status ~p", [length(Rows), Completed]),
             erlimem_buf:insert_rows(Buffer, Rows),
             Count = erlimem_buf:get_buffer_max(Buffer),
             ?Debug("____ ~p inserted ~p total ~p status ~p~n", [StmtRef, length(Rows), Count, Completed]),
