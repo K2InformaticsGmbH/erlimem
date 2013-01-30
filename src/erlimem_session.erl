@@ -25,7 +25,7 @@
         buf,
         result,
         maxrows,
-        completed = false,
+        completed,
         fetchopts = []
     }).
 
@@ -39,8 +39,7 @@
 		]).
 
 % statement APIs
--export([start_async_read/1
-        , start_async_read/2
+-export([ start_async_read/2
         , get_buffer_max/1
         , rows_from/2
         , prev_rows/1
@@ -89,7 +88,6 @@ prepare_update(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {p
 execute_update(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {execute_update, StmtRef}).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
 fetch_close(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {fetch_close, StmtRef}).
-start_async_read(                                Ctx) -> start_async_read([], Ctx).
 start_async_read(Opts,       {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
     gen_server:cast(Pid, {read_block_async, Opts, StmtRef}).
@@ -190,25 +188,25 @@ handle_call({insert_row, Clm, Val, StmtRef}, From, #state{stmts=Stmts} = State) 
 handle_call({clear_buf, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf} = Stmt,
-    NewBuf = erlimem_buf:clear(Buf),
+    #drvstmt{buf=Buf,completed=Completed} = Stmt,
+    NewBuf = if Completed =:= true -> erlimem_buf:clear(Buf); true -> Buf end,
     NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf} = Stmt,
-    Count = erlimem_buf:get_buffer_max(Buf),
+    #drvstmt{buf=Buf,completed=Completed} = Stmt,
+    {ok, Count} = erlimem_buf:get_buffer_max(Buf),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Count,State#state{idle_timer=NewTimer}};
+    {reply, {ok,Completed,Count}, State#state{idle_timer=NewTimer}};
 handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
-    if Completed =:= false ->
-%        io:format(user, "prefetch...~n", []),
+    if (Completed =:= false) andalso (Opts =:= []) ->
+        io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -229,6 +227,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
     if (Completed =:= false) andalso (Opts =:= []) ->
+        io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -270,10 +269,10 @@ handle_call({execute_update, StmtRef}, From, #state{connection=Connection,seco=S
 
 handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer
-                                        ,stmts=Stmts
                                         ,schema=Schema
                                         ,seco=SeCo
                                         ,event_pids=EvtPids} = State) ->
+    ?Debug("~p:~p call ~p", [?MODULE, ?LINE, Msg]),
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
@@ -297,16 +296,21 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             ?Debug("~p", [ST]),
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
             {reply, E, State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}};
-        Result ->
+        _Result ->
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
             {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
     end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
-io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
+    ?Info("~p fetch_recs_async ~p ~p", [?MODULE, StmtRef, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    if Opts =/= [] -> erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection); true -> ok end,
-    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),    
+    #drvstmt{completed = Completed} = Stmt,
+    if Completed =:= true ->
+        ?Info("~p  - fetch_close ~p", [?MODULE, Opts]),
+        erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection);
+        true -> ok
+    end,
+    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),
     {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{fetchopts=Opts}})}};
 handle_cast(Request, State) ->
     ?Error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
@@ -331,7 +335,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                 gen_server:reply(Form, Rslt),
                 {noreply, State#state{stmts=NStmts}};
             Term ->
-                ?Debug("LOCAL async __RX__ ~p For ~p", [Term, Form]),
+                ?Info("LOCAL async __RX__ ~p For ~p", [Term, Form]),
                 gen_server:reply(Form, Term),
                 {noreply, State}
     end;
@@ -339,7 +343,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
     {_, #drvstmt{buf=Buffer} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     case {Rows,Completed} of
         {[], _} ->
-            ?Info([session, self()], "~p async_resp []", [?MODULE]),
+            ?Debug([session, self()], "~p async_resp []", [?MODULE]),
             {noreply, State};
         {error, Result} ->
             ?Error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
@@ -348,7 +352,8 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
                                Completed =:= false;
                                Completed =:= tail ->
             erlimem_buf:insert_rows(Buffer, Rows),
-            io:format(user, "~p Completed ~p rows ~p~n", [StmtRef, Completed, Rows]),
+            {ok, Count} = erlimem_buf:get_buffer_max(Buffer),
+            ?Info("__RX__ ~p received rows ~p total in buffer ~p status ~p", [StmtRef, length(Rows), Count, Completed]),
             NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
             {noreply, State#state{stmts=NewStmts}};
         Unknown ->
@@ -359,7 +364,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
 % 
 % tcp
 %
-handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=From, stmts=Stmts,maxrows=MaxRows}=State) ->
+handle_info({tcp,S,Pkt}, #state{buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
     NewBin = << Buf/binary, Pkt/binary >>,
     NewState =
     case (catch binary_to_term(NewBin)) of
@@ -368,27 +373,33 @@ handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=From, stmts
                 State#state{buf=NewBin};
             {error, Exception} ->
                 ?Error("~p throw ~p", [?MODULE, Exception]),
-                if From =/= undefined -> gen_server:reply(From, Exception); true -> ok end,
-                State#state{buf= <<>>, pending=undefined};
-            {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
-                ?Info("~p RX ~p", [?MODULE, SRslt]),
-                Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
-                NStmts = lists:keystore(StmtRef, 1, Stmts,
-                            {StmtRef, #drvstmt{ result   = {columns, Clms}
-                                              , buf      = erlimem_buf:create(Fun)
-                                              , maxrows  = MaxRows}
-                            }),
-                if From =/= undefined -> gen_server:reply(From, Rslt); true -> ok end,
-                State#state{buf= <<>>, stmts=NStmts, pending=undefined};
-            {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                ?Debug("TCP async __RX__ rows ~p For ~p", [Rows, From]),
-                ?Info("TCP async __RX__ ref ~p For ~p", [StmtRef, From]),
-                {_, NState} = handle_info({StmtRef,{Rows,Completed}}, State),
-                NState#state{buf= <<>>};
+                gen_server:reply(Form,  {error, Exception}),
+                State;
             Term ->
-                ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                if From =/= undefined -> gen_server:reply(From, Term); true -> ok end,
-                State#state{buf= <<>>, pending=undefined}
+                NState =
+                case Term of
+                    {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
+                        ?Debug("~p RX ~p", [?MODULE, SRslt]),
+                        Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
+                        NStmts = lists:keystore(StmtRef, 1, Stmts,
+                                    {StmtRef, #drvstmt{ result   = {columns, Clms}
+                                                      , buf      = erlimem_buf:create(Fun)
+                                                      , maxrows  = MaxRows}
+                                    }),
+                        gen_server:reply(Form, Rslt),
+                        State#state{stmts=NStmts};
+                    {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                        {_, NS} = handle_info({StmtRef,{Rows,Completed}}, State),
+                        NS;
+                    _ ->
+                        ?Info("TCP async __RX__ ~p For ~p", [Term, Form]),
+                        gen_server:reply(Form, Term),
+                        State
+                end,
+                TSize = byte_size(term_to_binary(Term)),
+                RestSize = byte_size(NewBin)-TSize,
+                {noreply, NwState} = handle_info({tcp,S,binary_part(NewBin, {TSize, RestSize})}, NState#state{buf= <<>>}),
+                NwState
     end,
     inet:setopts(S,[{active,once}]),
     {noreply, NewState};
@@ -425,6 +436,8 @@ handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:
             ?Debug([session, self()], "~p # ~p <- ~p", [?MODULE, Found, Evt])
     end,
     {noreply, State};
+
+
 handle_info(timeout, State) ->
     ?Debug([session, self()], "~p close on timeout", [?MODULE]),
     close({?MODULE, self()}),

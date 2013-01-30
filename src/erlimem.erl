@@ -3,6 +3,8 @@
 -include("erlimem.hrl").
 -define(SESSMOD, erlimem_session).
 
+-define(LOG(_F,_A), io:format(user, "[TEST] "++_F++"~n", _A)).
+
 %% Application callbacks
 -export([start/0, stop/0, open/3, loglevel/1]).
 
@@ -17,7 +19,7 @@ open(Type, Opts, Cred) ->
     _ -> ok
     end,
     case gen_server:start(?SESSMOD, [Type, Opts, Cred], []) of
-        {ok, Pid} -> {?SESSMOD, Pid};
+        {ok, Pid} -> {ok, {?SESSMOD, Pid}};
         {error, {error, Error}} -> {error, Error};
         Other -> Other
     end.
@@ -44,9 +46,9 @@ db_conn_test_() ->
     }.
 
 setup_con() ->
-    io:format(user, "+-----------------------------------------------------------+~n",[]),
-    io:format(user, "|                CONNECTION SETUP TESTS                     |~n",[]),
-    io:format(user, "+-----------------------------------------------------------+~n",[]),
+    ?LOG("+-----------------------------------------------------------+",[]),
+    ?LOG("|                CONNECTION SETUP TESTS                     |",[]),
+    ?LOG("+-----------------------------------------------------------+",[]),
     application:set_env(imem, mnesia_node_type, ram),
     application:start(imem),
     erlimem:start().
@@ -54,10 +56,10 @@ setup_con() ->
 teardown_con(_) ->
     erlimem:stop(),
     application:stop(imem),
-    io:format(user, "+===========================================================+~n",[]).
+    ?LOG("+===========================================================+",[]).
 
 logs(_Sess) ->
-    io:format(user, "--------- enable diable change log level (logs) ------------~n",[]),
+    ?LOG("--------- enable diable change log level (logs) ------------",[]),
 
     erlimem:loglevel(debug),
     ?Debug("This is a debug log"),
@@ -79,38 +81,38 @@ logs(_Sess) ->
     ?Info("This is should not appear"),
     ?Error("This is should not appear"),
 
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("------------------------------------------------------------",[]).
 
 all_cons(_) ->
-    io:format(user, "--------- authentication success for tcp/rpc/local ----------~n",[]),
+    ?LOG("--------- authentication success for tcp/rpc/local ----------",[]),
     Schema = 'Imem',
     Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
-    ?assertMatch({?SESSMOD, _}, erlimem:open(rpc, {node(), Schema}, Cred)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(tcp, {localhost, 8124, Schema}, Cred)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local_sec, {Schema}, Cred)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local, {Schema}, Cred)),
-    io:format(user, "connected successfully~n",[]),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, Cred)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, Cred)),
+    ?LOG("connected successfully",[]),
+    ?LOG("------------------------------------------------------------",[]).
 
 pswd_process(_) ->
-    io:format(user, "----------- driver pswd translate (pswd_process) -----------~n",[]),
+    ?LOG("----------- driver pswd translate (pswd_process) -----------",[]),
     Schema = 'Imem',
     CredMD50 = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
-    ?assertMatch({?SESSMOD, _}, erlimem:open(rpc, {node(), Schema}, CredMD50)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(tcp, {localhost, 8124, Schema}, CredMD50)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local_sec, {Schema}, CredMD50)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local, {Schema}, CredMD50)),
-    io:format(user, "connected successfully with md5 cred ~p~n",[CredMD50]),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, CredMD50)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, CredMD50)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, CredMD50)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, CredMD50)),
+    ?LOG("connected successfully with md5 cred ~p",[CredMD50]),
     CredMD51 = {<<"admin">>, <<"change_on_install">>},
-    ?assertMatch({?SESSMOD, _}, erlimem:open(rpc, {node(), Schema}, CredMD51)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(tcp, {localhost, 8124, Schema}, CredMD51)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local_sec, {Schema}, CredMD51)),
-    ?assertMatch({?SESSMOD, _}, erlimem:open(local, {Schema}, CredMD51)),
-    io:format(user, "connected successfully with cleartext cred ~p~n",[CredMD51]),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, CredMD51)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, CredMD51)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, CredMD51)),
+    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, CredMD51)),
+    ?LOG("connected successfully with cleartext cred ~p",[CredMD51]),
+    ?LOG("------------------------------------------------------------",[]).
 
 bad_con_reject(_) ->
-    io:format(user, "--------- authentication failed for rpc/tcp ----------------~n",[]),
+    ?LOG("--------- authentication failed for rpc/tcp ----------------",[]),
     Schema = 'Imem',
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(rpc, {node(), Schema}, BadCred)),
@@ -119,10 +121,11 @@ bad_con_reject(_) ->
     timer:sleep(1000),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(local_sec, {Schema}, BadCred)),
     timer:sleep(1000),
-    io:format(user, "connections rejected properly~n",[]),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("connections rejected properly",[]),
+    ?LOG("------------------------------------------------------------",[]).
 %-------------------------------------------------------------------------------------------------------------------
--endif.
+
+-else.
 
 %-------------------------------------------------------------------------------------------------------------------
 db_test_() ->
@@ -130,11 +133,12 @@ db_test_() ->
         setup,
         fun setup/0,
         fun teardown/1,
-        {with, [fun all_tables/1
-                , fun table_create_select_drop/1
-                , fun table_modify/1
-                , fun simul_insert/1
-                , fun table_tail/1
+        {with, [%fun all_tables/1
+                %, fun table_create_select_drop/1
+                %, fun table_modify/1
+                %, fun simul_insert/1
+                %, fun table_tail/1
+                fun table_no_eot/1
         ]}
         }
     }.
@@ -162,9 +166,9 @@ setup(Type) ->
     end.
 
 setup() ->
-    io:format(user, "+-----------------------------------------------------------+~n",[]),
-    io:format(user, "|                 TABLE MODIFICATION TESTS                  |~n",[]),
-    io:format(user, "+-----------------------------------------------------------+~n",[]),
+    ?LOG("+-----------------------------------------------------------+",[]),
+    ?LOG("|                 TABLE MODIFICATION TESTS                  |",[]),
+    ?LOG("+-----------------------------------------------------------+",[]),
     erlimem:start(),
     random:seed(erlang:now()),
     setup(local).
@@ -173,40 +177,39 @@ teardown(_Sess) ->
    % Sess:close(),
     erlimem:stop(),
     application:stop(imem),
-    io:format(user, "+===========================================================+~n",[]).
+    ?LOG("+===========================================================+",[]).
 
-
-all_tables(Sess) ->
-    io:format(user, "--------- select from all_tables (all_tables) --------------~n",[]),
+all_tables({ok, Sess}) ->
+    ?LOG("--------- select from all_tables (all_tables) --------------",[]),
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
-    io:format(user, "~p -> ~p~n", [Sql, {Clms, Statement}]),
-    Statement:start_async_read(),
-    io:format(user, "receiving...~n", []),
+    ?LOG("~p -> ~p", [Sql, {Clms, Statement}]),
+    Statement:start_async_read([]),
+    ?LOG("receiving...", []),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "received ~p~n", [Rows]),
+    ?LOG("received ~p", [Rows]),
     Statement:close(),
-    io:format(user, "statement closed~n", []),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("statement closed", []),
+    ?LOG("------------------------------------------------------------",[]).
 
-table_create_select_drop(Sess) ->
-    io:format(user, "-- create insert select drop (table_create_select_drop) ----~n", []),
+table_create_select_drop({ok, Sess}) ->
+    ?LOG("-- create insert select drop (table_create_select_drop) ----", []),
     create_table(Sess, atom_to_list(?Table)),
     insert_range(Sess, 20, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
-    io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    ?LOG("select ~p", [{Clms, Statement}]),
+    Statement:start_async_read([]),
     timer:sleep(1000),
-    io:format(user, "receiving...~n", []),
+    ?LOG("receiving...", []),
     {Rows,_,_} = Statement:next_rows(),
     Statement:close(),
-    io:format(user, "received ~p~n", [length(Rows)]),
+    ?LOG("received ~p", [length(Rows)]),
     drop_table(Sess, atom_to_list(?Table)),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("------------------------------------------------------------",[]).
 
-table_modify(Sess) ->
-    io:format(user, "------- update insert new delete rows (table_modify) -------~n",[]),
+table_modify({ok, Sess}) ->
+    ?LOG("------- update insert new delete rows (table_modify) -------",[]),
     erlimem:loglevel(info),
     create_table(Sess, atom_to_list(?Table)),
     NumRows = 10,
@@ -214,11 +217,11 @@ table_modify(Sess) ->
           || N <- lists:seq(1,NumRows)],
     ?assertEqual(Res, lists:duplicate(NumRows, ok)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
-    io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    ?LOG("select ~p", [{Clms, Statement}]),
+    Statement:start_async_read([]),
     timer:sleep(1000),
     {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "original table from db ~p~n", [Rows]),
+    ?LOG("original table from db ~p", [Rows]),
 
     % modify some rows in buffer
     Statement:update_rows([["4",1,4],
@@ -243,7 +246,7 @@ table_modify(Sess) ->
     ok = Statement:prepare_update(),
     ok = Statement:execute_update(),
     ok = Statement:fetch_close(),
-    io:format(user, "changed rows!~n", []),
+    ?LOG("changed rows!", []),
 
     Statement:start_async_read(),
     timer:sleep(1000),
@@ -252,68 +255,81 @@ table_modify(Sess) ->
                   ["2","11","11"],
                   ["3","5","5"],
                   ["4","12","12"]], NewRows1),
-    io:format(user, "modified table from db ~p~n", [NewRows1]),
+    ?LOG("modified table from db ~p", [NewRows1]),
     Statement:close(),
     drop_table(Sess, atom_to_list(?Table)),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("------------------------------------------------------------",[]).
 
-simul_insert(Sess) ->
-    io:format(user, "------------ simultaneous insert (simul_insert) ------------~n", []),
+simul_insert({ok, Sess}) ->
+    ?LOG("------------ simultaneous insert (simul_insert) ------------", []),
     create_table(Sess, atom_to_list(?Table)),
     insert_range(Sess, 11, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
-    io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    ?LOG("select ~p", [{Clms, Statement}]),
+    Statement:start_async_read([]),
     timer:sleep(100),
-    io:format(user, "receiving sync...~n", []),
+    ?LOG("receiving sync...", []),
     {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "received ~p~n", [Rows]),
-    io:format(user, "receiving async...~n", []),
+    ?LOG("received ~p", [Rows]),
+    ?LOG("receiving async...", []),
     insert_async(Sess, 20, atom_to_list(?Table)),
     ExtraRows = recv_delay(Statement, 10, []),
-    io:format(user, "received ~p~n", [ExtraRows]),
+    ?LOG("received ~p", [ExtraRows]),
     Statement:close(),
-    io:format(user, "statement closed~n", []),
+    ?LOG("statement closed", []),
     drop_table(Sess, atom_to_list(?Table)),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("------------------------------------------------------------",[]).
 
-table_tail(Sess) ->
-    io:format(user, "-------------- fetch async tail (table_tail) ---------------~n", []),
+table_tail({ok, Sess}) ->
+    ?LOG("-------------- fetch async tail (table_tail) ---------------", []),
     create_table(Sess, atom_to_list(?Table)),
     insert_range(Sess, 10, atom_to_list(?Table)),
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
-    io:format(user, "select ~p~n", [{Clms, Statement}]),
-    Statement:start_async_read(),
+    ?LOG("select ~p", [{Clms, Statement}]),
+    Statement:start_async_read([]),
     timer:sleep(100),
-    io:format(user, "receiving sync...~n", []),
+    ?LOG("receiving sync...", []),
     {Rows,_,_} = Statement:next_rows(),
-    io:format(user, "received ~p~n", [Rows]),
+    ?LOG("received ~p", [Rows]),
     timer:sleep(100),
     Statement:start_async_read([{fetch_mode,push},{tail_mode,true}]),
-    io:format(user, "receiving async...~n", []),
+    ?LOG("receiving async...", []),
     erlimem:loglevel(info),
     insert_async(Sess, 20, atom_to_list(?Table)),
     AsyncRows = recv_delay(Statement, 10, []),
-    io:format(user, "received async ~p~n", [AsyncRows]),
+    ?LOG("received async ~p", [AsyncRows]),
     Statement:close(),
-    io:format(user, "statement closed~n", []),
+    ?LOG("statement closed", []),
     drop_table(Sess, atom_to_list(?Table)),
-    io:format(user, "------------------------------------------------------------~n",[]).
+    ?LOG("------------------------------------------------------------",[]).
+
+table_no_eot({ok, Sess}) ->
+    ?LOG("----------------- fetch all (table_no_eot) ----------------", []),
+    create_table(Sess, atom_to_list(?Table)),
+    insert_range(Sess, 10, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
+    ?LOG("select ~p", [{Clms, Statement}]),
+    Statement:start_async_read([]),
+    timer:sleep(100),
+    ?LOG("receiving sync...", []),
+    {Rows,_,_} = Statement:next_rows(),
+    ?LOG("received ~p", [Rows]),
+    ?LOG("------------------------------------------------------------",[]).
 
 create_table(Sess, TableName) ->
     Sql = "create table "++TableName++" (col1 integer, col2 varchar2);",
     Res = Sess:exec(Sql),
-    io:format(user, "~p -> ~p~n", [Sql, Res]).
+    ?LOG("~p -> ~p", [Sql, Res]).
 
 drop_table(Sess, TableName) ->
     Res = Sess:exec("drop table "++TableName++";"),
-    io:format(user, "drop table -> ~p~n", [Res]).
+    ?LOG("drop table -> ~p", [Res]).
 
 recv_delay(_, 0, Rows) -> Rows;
 recv_delay(Statement, Count, Rows) ->
     timer:sleep(50),
     {Rs,_,_} = Statement:next_rows(),
-    io:format(user, "       received ~p~n", [Rs]),
+    ?LOG("       received ~p", [Rs]),
     recv_delay(Statement, Count-1, Rows ++ Rs).
 
 insert_async(Sess, N, TableName) ->
@@ -324,7 +340,7 @@ insert_async(Sess, N, TableName) ->
             timer:sleep(11),
             Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(Count) ++ ", '" ++ integer_to_list(Count) ++ "');",
             Res = Sess:exec(Sql),
-            io:format(user, "~p -> ~p~n", [Sql, Res]),
+            ?LOG("~p -> ~p", [Sql, Res]),
             F(F,Count-1)
     end,
     spawn(fun()-> F(F,N) end).
@@ -346,6 +362,9 @@ insert_range(_Sess, 0, _TableName) -> ok;
 insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
     Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');",
     Res = Sess:exec(Sql),
-    io:format(user, "~p -> ~p~n", [Sql, Res]),
+    ?LOG("~p -> ~p", [Sql, Res]),
     insert_range(Sess, N-1, TableName).
 %-------------------------------------------------------------------------------------------------------------------
+
+-endif.
+

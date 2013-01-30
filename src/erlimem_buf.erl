@@ -28,6 +28,7 @@ create(RowFun) ->
     }.
 
 clear(#buffer{tableid=Tab} = Buf) ->
+%io:format(user, "~p Clearing buffer ~p~n", [{?MODULE,?LINE}, Tab]),
     true = ets:delete_all_objects(Tab),
     Buf#buffer{row_top=0,row_bottom=0}.
 
@@ -77,12 +78,14 @@ get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd, rowfun=F, tableid
         [FirstRow] ->
             {MatchHead, MatchExpr} = build_match(size(FirstRow)),
             Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
+%io:format(user, "~p get_rows_from_ets selected rows (~p,~p) ~p~n", [?MODULE, RowStart, RowEnd, Rows]),
             NewRows = lists:foldl(  fun
                                         ([I,Op,RK],Rws) when is_integer(I) ->
                                             Row = F(RK),
                                             ets:insert(TableId, list_to_tuple([I, Op, RK | Row])),
                                             Rws ++ [[integer_to_list(I)|Row]];
                                         ([I,_Op,_RK|Rest],Rws) when is_integer(I) ->
+%io:format(user, "~p get_rows_from_ets no insert ~p~n", [?MODULE, [_RK|Rest]]),
                                             Rws ++ [[integer_to_list(I)|Rest]]
                                     end
                                     , []
@@ -102,7 +105,7 @@ build_match(Count, {Head,Expr}) ->
     
 % TODO - complete state of the buffer (true/false) need to be determined
 get_buffer_max(#buffer{tableid=TableId}) ->
-    {ok, true, ets:info(TableId, size)}.
+    {ok, ets:info(TableId, size)}.
 
 get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->
     CacheSize = ets:info(TableId, size),
