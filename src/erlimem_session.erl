@@ -199,9 +199,10 @@ handle_call({clear_buf, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
 handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf,completed=Completed} = Stmt,
+    #drvstmt{buf=Buf,completed=C} = Stmt,
     {ok, Count} = erlimem_buf:get_buffer_max(Buf),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    Completed = if (C =:= true) orelse (C =:= false) -> C; true -> false end,
     {reply, {ok,Completed,Count}, State#state{idle_timer=NewTimer}};
 handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
