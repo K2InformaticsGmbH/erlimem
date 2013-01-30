@@ -26,7 +26,8 @@
         result,
         maxrows,
         completed,
-        fetchopts = []
+        fetchopts = [],
+        fetchonfly = 1
     }).
 
 %% session APIs
@@ -223,15 +224,23 @@ handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
+    {_,
+        #drvstmt{buf=Buf, maxrows=MaxRows, fetchonfly = FReq, fetchopts = Opts} = Stmt
+    } = lists:keyfind(StmtRef, 1, Stmts),
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
-    if (Completed =:= false) andalso (Opts =:= []) ->
-        io:format(user, "prefetch...~n", []),
-        gen_server:cast(self(), {read_block_async, Opts, StmtRef});
+    NewFReq = if 
+        (FReq < ?MAX_PREFETCH_ON_FLIGHT)  -> FReq + 1;
+        (FReq == ?MAX_PREFETCH_ON_FLIGHT) -> ?MAX_PREFETCH_ON_FLIGHT;
+        true                              -> FReq
+    end,
+    ?Debug("fetch on flight ~p", [NewFReq]),
+    if
+        (FReq =:= 0) andalso (NewFReq > 0) ->
+            ?Info("prefetch..."),
+            gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
-    NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
+    NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf, fetchonfly = NewFReq}}),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({modify_rows, Op, Rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
@@ -302,15 +311,18 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
     end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
-    ?Info("~p fetch_recs_async ~p ~p", [?MODULE, StmtRef, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{completed = Completed} = Stmt,
     if Completed =:= true ->
-        ?Info("~p  - fetch_close ~p", [?MODULE, Opts]),
+        ?Debug("~p  - fetch_close ~p", [?MODULE, Opts]),
         erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection);
         true -> ok
     end,
-    erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),
+    if Completed =/= tail ->
+        ?Debug("~p fetch_recs_async ~p ~p", [?MODULE, StmtRef, Opts]),
+        erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection);
+    true -> ok
+    end,
     {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{fetchopts=Opts}})}};
 handle_cast(Request, State) ->
     ?Error([session, self()], "~p unknown cast ~p", [?MODULE, Request]),
@@ -325,7 +337,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                 ?Error("~p throw ~p", [?MODULE, Exception]),
                 throw(Exception);
             {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
-                ?Info("~p RX ~p", [?MODULE, SRslt]),
+                ?Debug("~p RX ~p", [?MODULE, SRslt]),
                 Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
                 NStmts = lists:keystore(StmtRef, 1, Stmts,
                             {StmtRef, #drvstmt{ result   = {columns, Clms}
@@ -335,16 +347,13 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                 gen_server:reply(Form, Rslt),
                 {noreply, State#state{stmts=NStmts}};
             Term ->
-                ?Info("LOCAL async __RX__ ~p For ~p", [Term, Form]),
+                ?Debug("LOCAL async __RX__ ~p For ~p", [Term, Form]),
                 gen_server:reply(Form, Term),
                 {noreply, State}
     end;
 handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
-    {_, #drvstmt{buf=Buffer} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    {_, #drvstmt{buf=Buffer, fetchopts = Opts, fetchonfly = FReq} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     case {Rows,Completed} of
-        {[], _} ->
-            ?Debug([session, self()], "~p async_resp []", [?MODULE]),
-            {noreply, State};
         {error, Result} ->
             ?Error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
             {noreply, State};
@@ -353,8 +362,16 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
                                Completed =:= tail ->
             erlimem_buf:insert_rows(Buffer, Rows),
             {ok, Count} = erlimem_buf:get_buffer_max(Buffer),
-            ?Info("__RX__ ~p received rows ~p total in buffer ~p status ~p", [StmtRef, length(Rows), Count, Completed]),
-            NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
+            ?Debug("__RX__ ~p received rows ~p total in buffer ~p status ~p fetch on flight ~p", [StmtRef, length(Rows), Count, Completed, FReq]),
+            if
+                (Completed =:= false) andalso (Opts =:= []) andalso (FReq > 0) ->
+                    ?Info("prefetch..."),
+                    NewFReq = FReq - 1,
+                    gen_server:cast(self(), {read_block_async, Opts, StmtRef});
+                (Completed =:= true) -> NewFReq = 0;
+                true -> NewFReq = 0
+            end,
+            NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed, fetchonfly = NewFReq}}),
             {noreply, State#state{stmts=NewStmts}};
         Unknown ->
             ?Error([session, self()], "~p async_resp unknown resp ~p", [?MODULE, Unknown]),

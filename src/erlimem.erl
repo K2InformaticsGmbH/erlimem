@@ -133,12 +133,12 @@ db_test_() ->
         setup,
         fun setup/0,
         fun teardown/1,
-        {with, [%fun all_tables/1
-                %, fun table_create_select_drop/1
-                %, fun table_modify/1
-                %, fun simul_insert/1
-                %, fun table_tail/1
-                fun table_no_eot/1
+        {with, [fun all_tables/1
+                , fun table_create_select_drop/1
+                , fun table_modify/1
+                , fun simul_insert/1
+                , fun table_no_eot/1
+                , fun table_tail/1
         ]}
         }
     }.
@@ -280,6 +280,20 @@ simul_insert({ok, Sess}) ->
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------",[]).
 
+table_no_eot({ok, Sess}) ->
+    ?LOG("----------------- fetch all (table_no_eot) ----------------", []),
+    create_table(Sess, atom_to_list(?Table)),
+    insert_range(Sess, 10, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
+    ?LOG("select ~p", [{Clms, Statement}]),
+    Statement:start_async_read([]),
+    timer:sleep(100),
+    ?LOG("receiving sync...", []),
+    {Rows,_,_} = Statement:next_rows(),
+    ?LOG("received ~p", [Rows]),
+    drop_table(Sess, atom_to_list(?Table)),
+    ?LOG("------------------------------------------------------------",[]).
+
 table_tail({ok, Sess}) ->
     ?LOG("-------------- fetch async tail (table_tail) ---------------", []),
     create_table(Sess, atom_to_list(?Table)),
@@ -301,19 +315,6 @@ table_tail({ok, Sess}) ->
     Statement:close(),
     ?LOG("statement closed", []),
     drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------",[]).
-
-table_no_eot({ok, Sess}) ->
-    ?LOG("----------------- fetch all (table_no_eot) ----------------", []),
-    create_table(Sess, atom_to_list(?Table)),
-    insert_range(Sess, 10, atom_to_list(?Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
-    ?LOG("select ~p", [{Clms, Statement}]),
-    Statement:start_async_read([]),
-    timer:sleep(100),
-    ?LOG("receiving sync...", []),
-    {Rows,_,_} = Statement:next_rows(),
-    ?LOG("received ~p", [Rows]),
     ?LOG("------------------------------------------------------------",[]).
 
 create_table(Sess, TableName) ->
