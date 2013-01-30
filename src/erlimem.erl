@@ -171,7 +171,7 @@ setup() ->
     ?LOG("+-----------------------------------------------------------+",[]),
     erlimem:start(),
     random:seed(erlang:now()),
-    setup(local).
+    setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
