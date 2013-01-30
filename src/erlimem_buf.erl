@@ -79,9 +79,9 @@ get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd, rowfun=F, tableid
             Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
             NewRows = lists:foldl(  fun
                                         ([I,Op,RK],Rws) when is_integer(I) ->
-                                            [K|Rest] = F(RK),
-                                            ets:insert(TableId, list_to_tuple([I, Op, K | Rest])),
-                                            Rws ++ [[integer_to_list(I)|Rest]];
+                                            Row = F(RK),
+                                            ets:insert(TableId, list_to_tuple([I, Op, RK | Row])),
+                                            Rws ++ [[integer_to_list(I)|Row]];
                                         ([I,_Op,_RK|Rest],Rws) when is_integer(I) ->
                                             Rws ++ [[integer_to_list(I)|Rest]]
                                     end

@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 -include("erlimem.hrl").
--include_lib("imem/include/imem_meta.hrl").
+-include_lib("imem/include/imem_sql.hrl").
 
 -record(state, {
     status=closed,
@@ -51,7 +51,8 @@
         , insert_row/3
         , delete_rows/2
         , insert_rows/2
-        , commit_modified/1
+        , prepare_update/1
+        , execute_update/1
         , row_with_key/2
         , fetch_close/1
 		]).
@@ -84,7 +85,8 @@ insert_row(CId, Val,         {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {i
 update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, upd, Rows, StmtRef}).
 delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
-commit_modified(             {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {commit_modified, StmtRef}).
+prepare_update(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {prepare_update, StmtRef}).
+execute_update(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {execute_update, StmtRef}).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
 fetch_close(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {fetch_close, StmtRef}).
 start_async_read(                                Ctx) -> start_async_read([], Ctx).
@@ -96,17 +98,21 @@ call(Pid, Msg) ->
     ?Debug("~p call ~p ~p", [?MODULE, Pid, Msg]),
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
 
-init([Type, Opts, {User, Password}]) when is_binary(User), is_binary(Password) ->
-    ?Debug("~p connecting with ~p cred ~p", [?MODULE, {Type, Opts}, {User, Password}]),
+init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
+    ?Debug("~p connecting with ~p cred ~p", [?MODULE, {Type, Opts}, {User, Pswd}]),
+    PswdMD5 = case io_lib:printable_unicode_list(binary_to_list(Pswd)) of
+        true -> erlang:md5(Pswd);
+        false -> Pswd
+    end,
     case connect(Type, Opts) of
         {ok, Connect, Schema} ->
             try
                 SeCo =  case Connect of
                     {local, _} -> undefined;
                     _ ->
-                        erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, Password}}, Connect),
+                        erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
                         {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
-                        ?Info("authenticated ~p -> ~p", [{User, Password}, S]),
+                        ?Info("authenticated ~p -> ~p", [{User, Pswd}, S]),
                         erlimem_cmds:exec({login,S}, Connect),
                         {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
                         ?Info("logged in ~p", [{User, S}]),
@@ -222,8 +228,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
     {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
-    if Completed =:= false ->
-%        io:format(user, "prefetch...~n", []),
+    if (Completed =:= false) andalso (Opts =:= []) ->
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -249,25 +254,19 @@ io:format(user, "~p fetch_close~n", [StmtRef]),
     erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,ok,State#state{idle_timer=NewTimer}};
-handle_call({commit_modified, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({prepare_update, StmtRef}, From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
     Rows = erlimem_buf:get_modified_rows(Buf),
     ?Debug([session, self()], "~p modified rows ~p", [?MODULE, Rows]),
-    Result =
-    try
-        erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
-        erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
-        erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
-        Rows
-    catch
-        _Class:{Res,ST} ->
-            ?Error([session, self()], "~p ~p", [?MODULE, Res]),
-            ?Debug([session, self()], "~p error stack ~p", [?MODULE, ST]),
-            {error, Res}
-    end,
+    erlimem_cmds:exec({update_cursor_prepare, SeCo, StmtRef, Rows}, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Result,State#state{idle_timer=NewTimer}};
+    {noreply, State#state{idle_timer=NewTimer,pending=From}};
+handle_call({execute_update, StmtRef}, From, #state{connection=Connection,seco=SeCo,idle_timer=Timer,stmts=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {noreply, State#state{idle_timer=NewTimer,pending=From}};
 
 handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer
@@ -304,8 +303,9 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
     end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
-%io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
+io:format(user, "~p fetch_recs_async ~p~n", [StmtRef, Opts]),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    if Opts =/= [] -> erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection); true -> ok end,
     erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection),    
     {noreply, State#state{stmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{fetchopts=Opts}})}};
 handle_cast(Request, State) ->
@@ -313,15 +313,15 @@ handle_cast(Request, State) ->
     {noreply, State}.
 
 % 
-% local / rpc
+% local / rpc / tcp fallback
 %
 handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
     case Resp of
             {error, Exception} ->
                 ?Error("~p throw ~p", [?MODULE, Exception]),
                 throw(Exception);
-            {ok, Clms, Fun, StmtRef} ->
-                ?Debug("~p RX ~p", [?MODULE, {Clms, Fun, StmtRef}]),
+            {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
+                ?Info("~p RX ~p", [?MODULE, SRslt]),
                 Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
                 NStmts = lists:keystore(StmtRef, 1, Stmts,
                             {StmtRef, #drvstmt{ result   = {columns, Clms}
@@ -344,9 +344,11 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
         {error, Result} ->
             ?Error([session, self()], "~p async_resp ~p", [?MODULE, Result]),
             {noreply, State};
-        {Rows, Completed} when Completed =:= true; Completed =:= false ->
+        {Rows, Completed} when Completed =:= true;
+                               Completed =:= false;
+                               Completed =:= tail ->
             erlimem_buf:insert_rows(Buffer, Rows),
-%            io:format(user, "~p Completed ~p~n", [StmtRef, Completed]),
+            io:format(user, "~p Completed ~p rows ~p~n", [StmtRef, Completed, Rows]),
             NewStmts = lists:keyreplace(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{completed=Completed}}),
             {noreply, State#state{stmts=NewStmts}};
         Unknown ->
@@ -357,7 +359,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
 % 
 % tcp
 %
-handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
+handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=From, stmts=Stmts,maxrows=MaxRows}=State) ->
     NewBin = << Buf/binary, Pkt/binary >>,
     NewState =
     case (catch binary_to_term(NewBin)) of
@@ -366,26 +368,27 @@ handle_info({tcp,S,Pkt}, #state{event_pids=EvtPids, buf=Buf, pending=Form, stmts
                 State#state{buf=NewBin};
             {error, Exception} ->
                 ?Error("~p throw ~p", [?MODULE, Exception]),
-                NewBuf = <<>>,
-                throw(Exception);
-            {ok, Clms, Fun, StmtRef} ->
-                ?Debug("~p RX ~p", [?MODULE, {Clms, Fun, StmtRef}]),
+                if From =/= undefined -> gen_server:reply(From, Exception); true -> ok end,
+                State#state{buf= <<>>, pending=undefined};
+            {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
+                ?Info("~p RX ~p", [?MODULE, SRslt]),
                 Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
                 NStmts = lists:keystore(StmtRef, 1, Stmts,
                             {StmtRef, #drvstmt{ result   = {columns, Clms}
                                               , buf      = erlimem_buf:create(Fun)
                                               , maxrows  = MaxRows}
                             }),
-                gen_server:reply(Form, Rslt),
-                State#state{buf= <<>>, stmts=NStmts};
+                if From =/= undefined -> gen_server:reply(From, Rslt); true -> ok end,
+                State#state{buf= <<>>, stmts=NStmts, pending=undefined};
             {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                ?Info("TCP async __RX__ rows ~p For ~p", [length(Rows), Form]),
+                ?Debug("TCP async __RX__ rows ~p For ~p", [Rows, From]),
+                ?Info("TCP async __RX__ ref ~p For ~p", [StmtRef, From]),
                 {_, NState} = handle_info({StmtRef,{Rows,Completed}}, State),
                 NState#state{buf= <<>>};
             Term ->
-                ?Info("TCP async __RX__ ~p For ~p", [Term, Form]),
-                gen_server:reply(Form, Term),
-                State#state{buf= <<>>}
+                ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                if From =/= undefined -> gen_server:reply(From, Term); true -> ok end,
+                State#state{buf= <<>>, pending=undefined}
     end,
     inet:setopts(S,[{active,once}]),
     {noreply, NewState};

@@ -49,7 +49,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
 recv_sync({M, _}, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         Data ->
-            ?Debug("LOCAL ___RX___ ~p", [Data]),
+            ?Info("LOCAL ___RX___ ~p", [Data]),
             Data
     end;
 recv_sync({tcp, Sock}, Bin) ->
