@@ -15,20 +15,20 @@
     case application:get_env(erlimem, logging) of
     {ok, debug} ->
         case __L of
-        dbg -> io:format(user, "[debug] " ++ __F ++ "~n", __A);
-        nfo -> io:format(user, "[info] " ++ __F ++ "~n", __A);
-        err -> io:format(user, "[error] " ++ __F ++ "~n", __A);
+        dbg -> io:format(user, "[_DRIVER_] [debug ~p:~p] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        nfo -> io:format(user, "[_DRIVER_] [info  ~p:~p] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        err -> io:format(user, "[_DRIVER_] [error ~p:~p] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
         _ -> ok
         end;
     {ok, info} ->
         case __L of
-        nfo -> io:format(user, "[info] " ++ __F ++ "~n", __A);
-        err -> io:format(user, "[error] " ++ __F ++ "~n", __A);
+        nfo -> io:format(user, "[_DRIVER_] [info ] " ++ __F ++ "~n", __A);
+        err -> io:format(user, "[_DRIVER_] [error] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     {ok, error} ->
         case __L of
-        err -> io:format(user, "[error] " ++ __F ++ "~n", __A);
+        err -> io:format(user, "[_DRIVER_] [error] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     _ -> ok
