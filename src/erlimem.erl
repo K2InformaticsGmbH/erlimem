@@ -312,6 +312,7 @@ table_tail({ok, Sess}) ->
     insert_async(Sess, 20, atom_to_list(?Table)),
     AsyncRows = recv_delay(Statement, 10, []),
     ?LOG("received async ~p", [AsyncRows]),
+    ?assertEqual(30, length(AsyncRows)),
     Statement:close(),
     ?LOG("statement closed", []),
     drop_table(Sess, atom_to_list(?Table)),
