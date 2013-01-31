@@ -206,9 +206,8 @@ handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmt
     {reply, {ok,Completed,Count}, State#state{idle_timer=NewTimer}};
 handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
-    {Rows, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
+    {_, #drvstmt{buf=Buf, maxrows=MaxRows, completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    {{Rows,_,CatchSize}, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
     if (Completed =:= false) andalso (Opts =:= []) ->
         io:format(user, "prefetch...~n", []),
         gen_server:cast(self(), {read_block_async, Opts, StmtRef});
@@ -217,22 +216,26 @@ handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=St
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     ?Debug("~p add ~p stmts ~p", [{?MODULE,?LINE}, StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
+    {reply,{Rows,Completed,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
-    #drvstmt{buf=Buf, maxrows=MaxRows} = Stmt,
-    {Rows, NewBuf} = erlimem_buf:get_prev_rows(Buf, MaxRows),
+    #drvstmt{buf=Buf, maxrows=MaxRows, completed = Status} = Stmt,
+    {{Rows,_,CatchSize}, NewBuf} = erlimem_buf:get_prev_rows(Buf, MaxRows),
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     ?Debug("~p add ~p stmts ~p", [{?MODULE,?LINE}, StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
+    {reply,{Rows,Status,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_,
-        #drvstmt{buf=Buf, maxrows=MaxRows, fetchonfly = FReq, fetchopts = Opts} = Stmt
+        #drvstmt{ buf = Buf
+                , maxrows = MaxRows
+                , fetchonfly = FReq
+                , fetchopts = Opts
+                , completed = Status} = Stmt
     } = lists:keyfind(StmtRef, 1, Stmts),
-    {Rows, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
+    {{Rows,_,CatchSize}, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
     NewFReq = if 
         (FReq < ?MAX_PREFETCH_ON_FLIGHT)  -> FReq + 1;
         (FReq == ?MAX_PREFETCH_ON_FLIGHT) -> ?MAX_PREFETCH_ON_FLIGHT;
@@ -248,7 +251,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf, fetchonfly = NewFReq}}),
     ?Debug("~p add/replace ~p stmts ~p", [{?MODULE,?LINE}, StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,Rows,State#state{idle_timer=NewTimer,stmts=NewStmts}};
+    {reply,{Rows,Status,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({modify_rows, Op, Rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
