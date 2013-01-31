@@ -206,17 +206,30 @@ handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmt
     {reply, {ok,Completed,Count}, State#state{idle_timer=NewTimer}};
 handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_, #drvstmt{buf=Buf, maxrows=MaxRows, completed = Completed, fetchopts = Opts} = Stmt} = lists:keyfind(StmtRef, 1, Stmts),
+    {_,
+        #drvstmt{ buf = Buf
+                , maxrows = MaxRows
+                , fetchonfly = FReq
+                , fetchopts = Opts
+                , completed = Status} = Stmt
+    } = lists:keyfind(StmtRef, 1, Stmts),
     {{Rows,_,CatchSize}, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
-    if (Completed =:= false) andalso (Opts =:= []) ->
-        io:format(user, "prefetch...~n", []),
-        gen_server:cast(self(), {read_block_async, Opts, StmtRef});
+    NewFReq = if 
+        (FReq < ?MAX_PREFETCH_ON_FLIGHT)  -> FReq + 1;
+        (FReq == ?MAX_PREFETCH_ON_FLIGHT) -> ?MAX_PREFETCH_ON_FLIGHT;
+        true                              -> FReq
+    end,
+    ?Debug("fetch on flight ~p", [NewFReq]),
+    if
+        (FReq =:= 0) andalso (NewFReq > 0) ->
+            ?Info("~p ~p prefetching...", [{?MODULE,?LINE}, StmtRef]),
+            gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     ?Debug("~p add ~p stmts ~p", [{?MODULE,?LINE}, StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {reply,{Rows,Completed,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
+    {reply,{Rows,Status,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
@@ -244,7 +257,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     ?Debug("fetch on flight ~p", [NewFReq]),
     if
         (FReq =:= 0) andalso (NewFReq > 0) ->
-            ?Info("prefetch..."),
+            ?Info("~p ~p prefetching...", [{?MODULE,?LINE}, StmtRef]),
             gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
@@ -266,7 +279,7 @@ handle_call({row_with_key, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {reply,Row,State#state{idle_timer=NewTimer}};
 handle_call({fetch_close, StmtRef}, _From, #state{connection=Connection,seco=SeCo,idle_timer=Timer} = State) ->
-io:format(user, "~p fetch_close~n", [StmtRef]),
+    ?Info("~p fetch_close ~p", [{?MODULE,?LINE}, StmtRef]),
     erlang:cancel_timer(Timer),
     erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
@@ -322,13 +335,42 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #drvstmt{completed = Completed} = Stmt} ->
-            if Completed =:= true ->
-                ?Debug("~p  - fetch_close ~p", [{?MODULE,?LINE}, Opts]),
+            if (Completed =:= true) andalso (Opts =:= []) ->
+%            if (Completed =:= true) ->
+                ?Info("~p ~p fetch_close", [{?MODULE,?LINE}, StmtRef]),
                 erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection);
                 true -> ok
             end,
-            if Completed =/= tail ->
-                ?Debug("~p fetch_recs_async ~p ~p", [{?MODULE,?LINE}, StmtRef, Opts]),
+            FetchMode = proplists:get_value(fetch_mode, Opts, none),
+            TailMode  = proplists:get_value(tail_mode,  Opts, none),
+            ?Info("Completed ~p, FetchMode ~p, TailMode ~p", [Completed, FetchMode, TailMode]),
+            Fetch = case {Completed, FetchMode, TailMode} of
+                {undefined,  none, none} -> true;
+                {undefined,  push, true} -> true;
+                {undefined,  push, none} -> true;
+                {undefined,  skip, true} -> true;
+                {undefined,  skip, none} -> true;
+
+                {true,       none, none} -> true;
+                {true,       push, true} -> false;
+                {true,       push, none} -> true;
+                {true,       skip, true} -> true;
+                {true,       skip, none} -> true;
+
+                {false,      none, none} -> true;
+                {false,      push, true} -> true;
+                {false,      push, none} -> true;
+                {false,      skip, true} -> true;
+                {false,      skip, none} -> true;
+
+                {tail,       none, none} -> true;
+                {tail,       push, true} -> false;
+                {tail,       push, none} -> true;
+                {tail,       skip, true} -> true;
+                {tail,       skip, none} -> true
+            end,
+            if Fetch ->
+                ?Info("~p ~p fetch_recs_async ~p", [{?MODULE,?LINE}, StmtRef, Opts]),
                 erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection);
             true -> ok
             end,
@@ -361,7 +403,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                 gen_server:reply(Form, Rslt),
                 {noreply, State#state{stmts=NStmts}};
             Term ->
-                ?Debug("LOCAL async __RX__ ~p For ~p", [Term, Form]),
+                ?Debug("~p LOCAL async __RX__ ~p For ~p", [{?MODULE, ?LINE}, Term, Form]),
                 gen_server:reply(Form, Term),
                 {noreply, State}
     end;
@@ -377,10 +419,11 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
                                        Completed =:= tail ->
                     erlimem_buf:insert_rows(Buffer, Rows),
                     {ok, Count} = erlimem_buf:get_buffer_max(Buffer),
-                    ?Debug("__RX__ ~p received rows ~p total in buffer ~p status ~p fetch on flight ~p", [StmtRef, length(Rows), Count, Completed, FReq]),
+                    ?Info("~p ~p __RX__ received rows ~p total in buffer ~p status ~p fetch on flight ~p",
+                         [{?MODULE, ?LINE}, StmtRef, length(Rows), Count, Completed, FReq]),
                     if
                         (Completed =:= false) andalso (Opts =:= []) andalso (FReq > 0) ->
-                            ?Info("prefetch..."),
+                            ?Info("~p ~p prefetching...", [{?MODULE,?LINE}, StmtRef]),
                             NewFReq = FReq - 1,
                             gen_server:cast(self(), {read_block_async, Opts, StmtRef});
                         (Completed =:= true) -> NewFReq = 0;
