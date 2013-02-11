@@ -26,7 +26,7 @@
         result,
         maxrows,
         completed,
-        fetchopts = [],
+        fetchopts,
         fetchonfly = 1
     }).
 
@@ -334,8 +334,8 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
     case lists:keyfind(StmtRef, 1, Stmts) of
-        {_, #drvstmt{completed = Completed} = Stmt} ->
-            if (Completed =:= true) andalso (Opts =:= []) ->
+        {_, #drvstmt{completed = Completed, fetchopts=OldOpts} = Stmt} ->
+            if (Completed =:= true) andalso (Opts =/= OldOpts) ->
 %            if (Completed =:= true) ->
                 ?Info("~p ~p fetch_close", [{?MODULE,?LINE}, StmtRef]),
                 erlimem_cmds:exec({fetch_close, SeCo, StmtRef}, Connection);
@@ -345,31 +345,34 @@ handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Co
             TailMode  = proplists:get_value(tail_mode,  Opts, none),
             ?Info("Completed ~p, FetchMode ~p, TailMode ~p", [Completed, FetchMode, TailMode]),
             Fetch = case {Completed, FetchMode, TailMode} of
-                {undefined,  none, none} -> true;
-                {undefined,  push, true} -> true;
-                {undefined,  push, none} -> true;
-                {undefined,  skip, true} -> true;
-                {undefined,  skip, none} -> true;
+                {undefined,  none, none}  -> true;
+                {undefined,  push, true}  -> true;
+                {undefined,  push, none}  -> true;
+                {undefined,  skip, true}  -> true;
+                {undefined,  skip, none}  -> true;
 
-                {true,       none, none} -> true;
-                {true,       push, true} -> false;
-                {true,       push, none} -> true;
-                {true,       skip, true} -> true;
-                {true,       skip, none} -> true;
+                {true,       none, none}  -> false;
+                {true,       push, true}  -> true;
+                {true,       push, false} -> true;
+                {true,       push, none}  -> true;
+                {true,       skip, true}  -> true;
+                {true,       skip, none}  -> true;
 
-                {false,      none, none} -> true;
-                {false,      push, true} -> true;
-                {false,      push, none} -> true;
-                {false,      skip, true} -> true;
-                {false,      skip, none} -> true;
+                {false,      none, none}  -> true;
+                {false,      push, true}  -> true;
+                {false,      push, false} -> true;
+                {false,      push, none}  -> true;
+                {false,      skip, true}  -> true;
+                {false,      skip, none}  -> true;
 
-                {tail,       none, none} -> true;
-                {tail,       push, true} -> false;
-                {tail,       push, none} -> true;
-                {tail,       skip, true} -> true;
-                {tail,       skip, none} -> true
+                {tail,       none, none}  -> true;
+                {tail,       push, true}  -> false;
+                {tail,       push, false} -> false;
+                {tail,       push, none}  -> true;
+                {tail,       skip, true}  -> true;
+                {tail,       skip, none}  -> true
             end,
-            if Fetch ->
+            if Fetch andalso (Opts =/= OldOpts) ->
                 ?Info("~p ~p fetch_recs_async ~p", [{?MODULE,?LINE}, StmtRef, Opts]),
                 erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection);
             true -> ok
