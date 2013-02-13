@@ -39,14 +39,14 @@
 -define(LOG(__L,__M,__F,__A), ok = ok).
 -endif.
 
--define(Debug(__M,__F,__A), ?LOG(dbg, __M,__F,__A)).
--define(Debug(__F,__A),     ?LOG(dbg, [], __F,__A)).
--define(Debug(__F),         ?LOG(dbg, [], __F, [])).
+-define(Debug(__M,__F,__A), ?LOG(dbg, __M, "~p"++__F, [{?MODULE,?LINE}]++__A)).
+-define(Debug(__F,__A),     ?LOG(dbg,  [], "~p"++__F, [{?MODULE,?LINE}]++__A)).
+-define(Debug(__F),         ?LOG(dbg,  [], "~p"++__F, [{?MODULE,?LINE}])).
 
--define(Info(__M,__F,__A),  ?LOG(nfo, __M,__F,__A)).
--define(Info(__F,__A),      ?LOG(nfo, [], __F,__A)).
--define(Info(__F),          ?LOG(nfo, [], __F, [])).
+-define(Info(__M,__F,__A),  ?LOG(nfo, __M, "~p"++__F, [{?MODULE,?LINE}]++__A)).
+-define(Info(__F,__A),      ?LOG(nfo,  [], "~p"++__F, [{?MODULE,?LINE}]++__A)).
+-define(Info(__F),          ?LOG(nfo,  [], "~p"++__F, [{?MODULE,?LINE}])).
 
--define(Error(__M,__F,__A), ?LOG(err, __M,__F,__A)).
--define(Error(__F,__A),     ?LOG(err, [], __F,__A)).
--define(Error(__F),         ?LOG(err, [], __F, [])).
+-define(Error(__M,__F,__A), ?LOG(err, __M, "~p "++__F, [{?MODULE,?LINE}]++__A)).
+-define(Error(__F,__A),     ?LOG(err,  [], "~p "++__F, [{?MODULE,?LINE}]++__A)).
+-define(Error(__F),         ?LOG(err,  [], "~p "++__F, [{?MODULE,?LINE}])).

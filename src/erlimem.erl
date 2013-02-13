@@ -3,6 +3,7 @@
 -include("erlimem.hrl").
 -define(SESSMOD, erlimem_session).
 
+-define(LOG(_F),    io:format(user, "[TEST] "++_F++"~n", [])).
 -define(LOG(_F,_A), io:format(user, "[TEST] "++_F++"~n", _A)).
 
 %% Application callbacks
@@ -46,9 +47,9 @@ db_conn_test_() ->
     }.
 
 setup_con() ->
-    ?LOG("+-----------------------------------------------------------+",[]),
-    ?LOG("|                CONNECTION SETUP TESTS                     |",[]),
-    ?LOG("+-----------------------------------------------------------+",[]),
+    ?LOG("+-----------------------------------------------------------+"),
+    ?LOG("|                CONNECTION SETUP TESTS                     |"),
+    ?LOG("+-----------------------------------------------------------+"),
     application:set_env(imem, mnesia_node_type, ram),
     application:start(imem),
     erlimem:start().
@@ -56,10 +57,10 @@ setup_con() ->
 teardown_con(_) ->
     erlimem:stop(),
     application:stop(imem),
-    ?LOG("+===========================================================+",[]).
+    ?LOG("+===========================================================+").
 
 logs(_Sess) ->
-    ?LOG("--------- enable diable change log level (logs) ------------",[]),
+    ?LOG("--------- enable diable change log level (logs) ------------"),
 
     erlimem:loglevel(debug),
     ?Debug("This is a debug log"),
@@ -81,21 +82,21 @@ logs(_Sess) ->
     ?Info("This is should not appear"),
     ?Error("This is should not appear"),
 
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 all_cons(_) ->
-    ?LOG("--------- authentication success for tcp/rpc/local ----------",[]),
+    ?LOG("--------- authentication success for tcp/rpc/local ----------"),
     Schema = 'Imem',
     Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, Cred)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, Cred)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, Cred)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, Cred)),
-    ?LOG("connected successfully",[]),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("connected successfully"),
+    ?LOG("------------------------------------------------------------").
 
 pswd_process(_) ->
-    ?LOG("----------- driver pswd translate (pswd_process) -----------",[]),
+    ?LOG("----------- driver pswd translate (pswd_process) -----------"),
     Schema = 'Imem',
     CredMD50 = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, CredMD50)),
@@ -109,10 +110,10 @@ pswd_process(_) ->
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, CredMD51)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, CredMD51)),
     ?LOG("connected successfully with cleartext cred ~p",[CredMD51]),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 bad_con_reject(_) ->
-    ?LOG("--------- authentication failed for rpc/tcp ----------------",[]),
+    ?LOG("--------- authentication failed for rpc/tcp ----------------"),
     Schema = 'Imem',
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(rpc, {node(), Schema}, BadCred)),
@@ -121,8 +122,8 @@ bad_con_reject(_) ->
     timer:sleep(1000),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(local_sec, {Schema}, BadCred)),
     timer:sleep(1000),
-    ?LOG("connections rejected properly",[]),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("connections rejected properly"),
+    ?LOG("------------------------------------------------------------").
 %-------------------------------------------------------------------------------------------------------------------
 
 -else.
@@ -133,12 +134,13 @@ db_test_() ->
         setup,
         fun setup/0,
         fun teardown/1,
-        {with, [fun all_tables/1
-                , fun table_create_select_drop/1
-                , fun table_modify/1
-                , fun simul_insert/1
-                , fun table_no_eot/1
-                , fun table_tail/1
+        {with, [fun native_apis/1
+                %, fun all_tables/1
+                %, fun table_create_select_drop/1
+                %, fun table_modify/1
+                %, fun simul_insert/1
+                %, fun table_no_eot/1
+                %, fun table_tail/1
         ]}
         }
     }.
@@ -166,21 +168,21 @@ setup(Type) ->
     end.
 
 setup() ->
-    ?LOG("+-----------------------------------------------------------+",[]),
-    ?LOG("|                 TABLE MODIFICATION TESTS                  |",[]),
-    ?LOG("+-----------------------------------------------------------+",[]),
+    ?LOG("+-----------------------------------------------------------+"),
+    ?LOG("|                 TABLE MODIFICATION TESTS                  |"),
+    ?LOG("+-----------------------------------------------------------+"),
     erlimem:start(),
     random:seed(erlang:now()),
-    setup(tcp).
+    setup(local).
 
 teardown(_Sess) ->
    % Sess:close(),
     erlimem:stop(),
     application:stop(imem),
-    ?LOG("+===========================================================+",[]).
+    ?LOG("+===========================================================+").
 
 all_tables({ok, Sess}) ->
-    ?LOG("--------- select from all_tables (all_tables) --------------",[]),
+    ?LOG("--------- select from all_tables (all_tables) --------------"),
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
     ?LOG("~p -> ~p", [Sql, {Clms, Statement}]),
@@ -191,7 +193,27 @@ all_tables({ok, Sess}) ->
     ?LOG("received ~p", [Rows]),
     Statement:close(),
     ?LOG("statement closed", []),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
+
+native_apis({ok, Sess}) ->
+    ?LOG("---------- native API test (table_native_create) -----------", []),
+    TableName = 'smpp@',
+    Fields = [time             
+             , protocol         
+             , level            
+             , originator_addr  
+             , originator_port  
+             , destination_addr 
+             , destination_port 
+             , pdu              
+             , extra],
+    SchemaName = Sess:run_cmd(schema, []),
+    DataTypes = [timestamp, atom, ipaddr, integer, ipaddr,integer, binary, term],
+    Sess:run_cmd(create_table, [TableName
+                               , {Fields, DataTypes, list_to_tuple([TableName]++Fields)}
+                               , [{record_name, TableName},{type, ordered_set}]
+                               , SchemaName]),
+    ?LOG("------------------------------------------------------------", []).
 
 table_create_select_drop({ok, Sess}) ->
     ?LOG("-- create insert select drop (table_create_select_drop) ----", []),
@@ -206,10 +228,10 @@ table_create_select_drop({ok, Sess}) ->
     Statement:close(),
     ?LOG("received ~p", [length(Rows)]),
     drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 table_modify({ok, Sess}) ->
-    ?LOG("------- update insert new delete rows (table_modify) -------",[]),
+    ?LOG("------- update insert new delete rows (table_modify) -------"),
     erlimem:loglevel(info),
     create_table(Sess, atom_to_list(?Table)),
     NumRows = 10,
@@ -258,7 +280,7 @@ table_modify({ok, Sess}) ->
     ?LOG("modified table from db ~p", [NewRows1]),
     Statement:close(),
     drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 simul_insert({ok, Sess}) ->
     ?LOG("------------ simultaneous insert (simul_insert) ------------", []),
@@ -278,7 +300,7 @@ simul_insert({ok, Sess}) ->
     Statement:close(),
     ?LOG("statement closed", []),
     drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 table_no_eot({ok, Sess}) ->
     ?LOG("----------------- fetch all (table_no_eot) ----------------", []),
@@ -292,7 +314,7 @@ table_no_eot({ok, Sess}) ->
     {Rows,_,_} = Statement:next_rows(),
     ?LOG("received ~p", [Rows]),
     drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 table_tail({ok, Sess}) ->
     ?LOG("-------------- fetch async tail (table_tail) ---------------", []),
@@ -316,7 +338,7 @@ table_tail({ok, Sess}) ->
     Statement:close(),
     ?LOG("statement closed", []),
     drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------",[]).
+    ?LOG("------------------------------------------------------------").
 
 create_table(Sess, TableName) ->
     Sql = "create table "++TableName++" (col1 integer, col2 varchar2);",
