@@ -1,5 +1,7 @@
 -module(erlimem_buf).
 
+-include("erlimem.hrl").
+
 -record(buffer,
     { row_top = 0
     , row_bottom = 0
@@ -28,7 +30,7 @@ create(RowFun) ->
     }.
 
 clear(#buffer{tableid=Tab} = Buf) ->
-%io:format(user, "~p Clearing buffer ~p~n", [{?MODULE,?LINE}, Tab]),
+    ?Debug("clearing buffer ~p", [Tab]),
     true = ets:delete_all_objects(Tab),
     Buf#buffer{row_top=0,row_bottom=0}.
 
@@ -44,7 +46,7 @@ modify_rows(Buf, ins, Rows) -> insert_new_rows(Buf, Rows);
 modify_rows(#buffer{tableid=TableId}, Op, Rows) when is_atom(Op) ->
     ExistingRows = [ets:lookup(TableId, list_to_integer(I)) || [I|_] <- Rows],
     NewRows = apply_op(Op, ExistingRows, Rows, []),
-%io:format(user, "modify_rows from ~p~nto ~p~nwith ~p~n", [ExistingRows,NewRows,Rows]),
+    ?Debug("modify_rows from ~p~nto ~p~nwith ~p", [ExistingRows,NewRows,Rows]),
     ets:insert(TableId, [list_to_tuple(R)||R<-NewRows]).
 
 apply_op(Op, [_|_] = ExistingRows, [F|_] = NewRows, []) when is_list(F)->
@@ -72,27 +74,30 @@ insert_new_rows(#buffer{tableid=TableId}, Rows) ->
     ets:insert(TableId, [list_to_tuple([I,ins,{}|R])||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), Rows)]).
 
 % TODO - complete state of the buffer (true/false) need to be determined
-get_rows_from_ets(#buffer{row_top=RowStart, row_bottom=RowEnd, rowfun=F, tableid=TableId}) ->
+get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tableid=TableId}) ->
     CacheSize = ets:info(TableId, size),
+    RowStart = if RowStart0 =:= 0 -> 1; true -> RowStart0 end, % ETS tables are indexed from 1
     case ets:lookup(TableId, RowStart) of
         [FirstRow] ->
             {MatchHead, MatchExpr} = build_match(size(FirstRow)),
             Rows = ets:select(TableId,[{MatchHead,[{'>=','$1',RowStart},{'=<','$1',RowEnd}],[MatchExpr]}]),
-%io:format(user, "~p get_rows_from_ets selected rows (~p,~p) ~p~n", [?MODULE, RowStart, RowEnd, Rows]),
+            ?Debug("get_rows_from_ets selected rows (~p,~p) ~p", [RowStart, RowEnd, Rows]),
             NewRows = lists:foldl(  fun
                                         ([I,Op,RK],Rws) when is_integer(I) ->
                                             Row = F(RK),
                                             ets:insert(TableId, list_to_tuple([I, Op, RK | Row])),
                                             Rws ++ [[integer_to_list(I)|Row]];
                                         ([I,_Op,_RK|Rest],Rws) when is_integer(I) ->
-%io:format(user, "~p get_rows_from_ets no insert ~p~n", [?MODULE, [_RK|Rest]]),
+                                            ?Debug("get_rows_from_ets no insert ~p", [[_RK|Rest]]),
                                             Rws ++ [[integer_to_list(I)|Rest]]
                                     end
                                     , []
                                     , Rows
                                     ),
             {NewRows, true, CacheSize};
-        [] -> {[], true, CacheSize}
+        [] ->
+            ?Info("get_rows_from_ets _NO_ROWS_ from ~p of total ~p rows", [RowStart, CacheSize]),
+            {[], true, CacheSize}
     end.
 
 rfun(R) -> R.
@@ -118,9 +123,11 @@ get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->
            true -> (NewRowTop + MaxRows - 1)
         end,
     NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
+    ?Debug("get_rows_from from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, CacheSize]),
     {get_rows_from_ets(NewBuf), NewBuf}.
 
-get_prev_rows(#buffer{row_top=RowTop} = Buf, MaxRows) ->
+get_prev_rows(#buffer{row_top=RowTop,tableid=TableId} = Buf, MaxRows) ->
+    _CacheSize = ets:info(TableId, size),
     NewRowTop =
         if (RowTop - MaxRows) < 1 -> 1;
            true -> (RowTop - MaxRows)
@@ -131,10 +138,12 @@ get_prev_rows(#buffer{row_top=RowTop} = Buf, MaxRows) ->
         end,
     NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
     if (RowTop == NewRowTop) ->
+            ?Info("get_prev_rows _NO_ROWS_ from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, _CacheSize]),
             {{[],undefined,undefined}, NewBuf};
         true ->
+            ?Debug("get_prev_rows from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, _CacheSize]),
             {_Rows,_,_} = Result = get_rows_from_ets(NewBuf),
-            %io:format(user, "Rows ~p OldBuf ~p NewBuf ~p~n", [length(Rows), Buf, NewBuf]),
+            ?Debug("Rows ~p OldBuf ~p NewBuf ~p", [length(_Rows), Buf, NewBuf]),
             {Result, NewBuf}
     end.
 
@@ -150,10 +159,12 @@ get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows) ->
         end,
     NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
     if (RowBottom == NewRowBottom) ->
+            ?Info("get_next_rows _NO_ROWS_ from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, CacheSize]),
             {{[],undefined,undefined}, NewBuf};
         true ->
+            ?Debug("get_next_rows from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, CacheSize]),
             {_Rows,_,_} = Result = get_rows_from_ets(NewBuf),
-            %io:format(user, "Rows ~p OldBuf ~p NewBuf ~p~n", [length(Rows), Buf, NewBuf]),
+            ?Debug("Rows ~p OldBuf ~p NewBuf ~p", [length(_Rows), Buf, NewBuf]),
             {Result, NewBuf}
     end.
 

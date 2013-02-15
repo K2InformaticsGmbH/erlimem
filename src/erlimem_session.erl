@@ -27,7 +27,8 @@
         maxrows,
         completed,
         fetchopts,
-        fetchonfly = 1
+        fetchonfly = 1,
+        cmdstr
     }).
 
 %% session APIs
@@ -206,12 +207,12 @@ handle_call({get_buffer_max, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmt
     {reply, {ok,Completed,Count}, State#state{idle_timer=NewTimer}};
 handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
-    {_,
-        #drvstmt{ buf = Buf
+    {_, #drvstmt{ buf = Buf
                 , maxrows = MaxRows
                 , fetchonfly = FReq
                 , fetchopts = Opts
-                , completed = Status} = Stmt
+                , completed = Status
+                , cmdstr = Sql} = Stmt
     } = lists:keyfind(StmtRef, 1, Stmts),
     {{Rows,_,CatchSize}, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
     NewFReq = if 
@@ -223,12 +224,14 @@ handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=St
     if
         (FReq =:= 0) andalso (NewFReq > 0) ->
             ?Info("~p prefetching...", [StmtRef]),
+            ?Debug("-> prefetching for ~p ...", [Sql]),
             gen_server:cast(self(), {read_block_async, Opts, StmtRef});
         true -> ok
     end,
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     ?Debug("add ~p stmts ~p", [StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    ?Debug("rows ~p status ~p buffer size ~p from ~p", [Rows,Status,CatchSize,RowId]),
     {reply,{Rows,Status,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
@@ -238,6 +241,7 @@ handle_call({prev_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf}}),
     ?Debug("add ~p stmts ~p", [StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    ?Info("rows ~p status ~p buffer size ~p", [Rows,Status,CatchSize]),
     {reply,{Rows,Status,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
@@ -264,6 +268,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
     NewStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, Stmt#drvstmt{buf=NewBuf, fetchonfly = NewFReq}}),
     ?Debug("add/replace ~p stmts ~p", [StmtRef, [S|| {S,_} <- NewStmts]]),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    ?Info("rows ~p status ~p buffer size ~p", [Rows,Status,CatchSize]),
     {reply,{Rows,Status,CatchSize},State#state{idle_timer=NewTimer,stmts=NewStmts}};
 handle_call({modify_rows, Op, Rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
@@ -302,34 +307,55 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer
                                         ,schema=Schema
                                         ,seco=SeCo
-                                        ,event_pids=EvtPids} = State) ->
+                                        ,event_pids=EvtPids
+                                        ,stmts=Stmts} = State) ->
     ?Debug("call ~p", [Msg]),
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
         exec ->
             NewEvtPids = EvtPids,
-            [_,MaxRows|_] = Rest,
+            [Sql,MaxRows|_] = Rest,
             list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
         subscribe ->
             MaxRows = 0,
             [Evt|_] = Rest,
             NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
+            Sql = undefined,
             list_to_tuple([Cmd,SeCo|Rest]);
         _ ->
             NewEvtPids = EvtPids,
             MaxRows = 0,
+            Sql = undefined,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
-    case (catch erlimem_cmds:exec(NewMsg, Connection)) of
-        {{error, E}, ST} ->
-            ?Error("cmd ~p error ~p", [Cmd, E]),
-            ?Debug("~p", [ST]),
+    IfStmtRefPending = lists:keymember('$stmt_ref_not_rcvd', 1, Stmts),
+    if
+        (Sql =/= undefined) andalso IfStmtRefPending ->
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {reply, E, State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}};
-        _Result ->
-            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {noreply,State#state{idle_timer=NewTimer, event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
+            {reply, {error, {'ClientException', "statement creation already in progress!"}}, State#state{idle_timer=NewTimer}};
+        true ->
+            NewStmts =
+                if (Sql =/= undefined)  ->
+                    HasStmtRef = case re:run(Sql, ?NoRefSqlRegEx) of
+                        {match,_} -> false;
+                        _ -> true
+                    end,
+                    if HasStmtRef -> lists:keystore('$stmt_ref_not_rcvd', 1, Stmts, {'$stmt_ref_not_rcvd', #drvstmt{cmdstr=Sql}});
+                    true -> Stmts
+                    end;
+                true -> Stmts
+                end,
+            case (catch erlimem_cmds:exec(NewMsg, Connection)) of
+                {{error, E}, ST} ->
+                    ?Error("cmd ~p error ~p", [Cmd, E]),
+                    ?Debug("~p", [ST]),
+                    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+                    {reply, E, State#state{idle_timer=NewTimer,event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}};
+                _Result ->
+                    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+                    {noreply,State#state{idle_timer=NewTimer,event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows,stmts=NewStmts}}
+            end
     end.
 
 handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Connection, seco=SeCo}=State) ->
@@ -397,12 +423,14 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
             {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
                 ?Debug("RX ~p", [SRslt]),
                 Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
-                NStmts = lists:keystore(StmtRef, 1, Stmts,
+                {'$stmt_ref_not_rcvd', #drvstmt{cmdstr=Sql}} = lists:keyfind('$stmt_ref_not_rcvd', 1, Stmts),
+                NStmts = lists:keystore('$stmt_ref_not_rcvd', 1, Stmts,
                             {StmtRef, #drvstmt{ result   = {columns, Clms}
                                               , buf      = erlimem_buf:create(Fun)
-                                              , maxrows  = MaxRows}
+                                              , maxrows  = MaxRows
+                                              , cmdstr   = Sql}
                             }),
-                ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
+                ?Info("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
                 gen_server:reply(Form, Rslt),
                 {noreply, State#state{stmts=NStmts}};
             Term ->
@@ -422,8 +450,8 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
                                        Completed =:= tail ->
                     erlimem_buf:insert_rows(Buffer, Rows),
                     {ok, Count} = erlimem_buf:get_buffer_max(Buffer),
-                    ?Info("~p __RX__ received rows ~p total in buffer ~p status ~p fetch on flight ~p",
-                         [StmtRef, length(Rows), Count, Completed, FReq]),
+                            ?Debug("~p ~p __RX__ received rows ~p total in buffer ~p status ~p fetch on flight ~p",
+                            [Buffer, StmtRef, length(Rows), Count, Completed, FReq]),
                     if
                         (Completed =:= false) andalso (Opts =:= []) andalso (FReq > 0) ->
                             ?Info("~p prefetching...", [StmtRef]),
@@ -464,10 +492,12 @@ handle_info({tcp,S,Pkt}, #state{buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRo
                     {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
                         ?Debug("RX ~p", [SRslt]),
                         Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
-                        NStmts = lists:keystore(StmtRef, 1, Stmts,
+                        {'$stmt_ref_not_rcvd', #drvstmt{cmdstr=Sql}} = lists:keyfind('$stmt_ref_not_rcvd', 1, Stmts),
+                        NStmts = lists:keystore('$stmt_ref_not_rcvd', 1, Stmts,
                                     {StmtRef, #drvstmt{ result   = {columns, Clms}
                                                       , buf      = erlimem_buf:create(Fun)
-                                                      , maxrows  = MaxRows}
+                                                      , maxrows  = MaxRows
+                                                      , cmdstr   = Sql}
                                     }),
                         gen_server:reply(Form, Rslt),
                         ?Debug("add/replace ~p stmts ~p", [StmtRef, [_S || {_S,_} <- NStmts]]),

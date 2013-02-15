@@ -135,12 +135,12 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [fun native_apis/1
-                %, fun all_tables/1
-                %, fun table_create_select_drop/1
-                %, fun table_modify/1
-                %, fun simul_insert/1
-                %, fun table_no_eot/1
-                %, fun table_tail/1
+                , fun all_tables/1
+                , fun table_create_select_drop/1
+                , fun table_modify/1
+                , fun simul_insert/1
+                , fun table_no_eot/1
+                , fun table_tail/1
         ]}
         }
     }.
