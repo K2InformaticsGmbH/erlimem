@@ -7,12 +7,12 @@
     , row_bottom = 0
     , tableid
     , rowfun
+    , state = initialized
     }).
 
 -export([create/1
         , clear/1
         , delete/1
-        , get_rows_from_ets/1
         , insert_rows/2
         , modify_rows/3
         , get_modified_rows/1
@@ -73,8 +73,7 @@ insert_new_rows(#buffer{tableid=TableId}, Rows) ->
     CacheSize = ets:info(TableId, size),
     ets:insert(TableId, [list_to_tuple([I,ins,{}|R])||{I,R}<-lists:zip(lists:seq(CacheSize+1, CacheSize+NrOfRows), Rows)]).
 
-% TODO - complete state of the buffer (true/false) need to be determined
-get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tableid=TableId}) ->
+get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tableid=TableId, state=St} = Buf) ->
     CacheSize = ets:info(TableId, size),
     RowStart = if RowStart0 =:= 0 -> 1; true -> RowStart0 end, % ETS tables are indexed from 1
     case ets:lookup(TableId, RowStart) of
@@ -94,10 +93,19 @@ get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tablei
                                     , []
                                     , Rows
                                     ),
-            {NewRows, true, CacheSize};
+            % true/false of the bufferstate denotes how much of the buffer is actually transferred to the user
+            % i.e. if user has hit the end of buffer
+            if ((St =:= started) andalso ((CacheSize =< RowEnd) orelse (RowStart == RowEnd))) % detecting finish
+               orelse (St =:= finished) % finished detected earlier
+               ->
+                ?Info("--- EOB --- "),
+                {[], true, CacheSize, Buf#buffer{state=finished}};
+            true ->
+                {NewRows, CacheSize =< RowEnd, CacheSize, Buf#buffer{state=started}}
+            end;
         [] ->
             ?Info("get_rows_from_ets _NO_ROWS_ from ~p of total ~p rows", [RowStart, CacheSize]),
-            {[], true, CacheSize}
+            {[], true, CacheSize, Buf}
     end.
 
 rfun(R) -> R.
@@ -112,6 +120,7 @@ build_match(Count, {Head,Expr}) ->
 get_buffer_max(#buffer{tableid=TableId}) ->
     {ok, ets:info(TableId, size)}.
 
+get_rows_from(#buffer{state=finished} = Buf, RowNum, MaxRows) -> get_rows_from(Buf#buffer{state=started}, RowNum, MaxRows);
 get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->
     CacheSize = ets:info(TableId, size),
     NewRowTop =
@@ -124,8 +133,15 @@ get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->
         end,
     NewBuf = Buf#buffer{row_top=NewRowTop,row_bottom=NewRowBottom},
     ?Debug("get_rows_from from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, CacheSize]),
-    {get_rows_from_ets(NewBuf), NewBuf}.
+    {Rows,Completed,CacheSize,NewBuf0} = get_rows_from_ets(NewBuf),
+    if RowNum =< CacheSize ->
+        {{Rows,Completed,CacheSize}, NewBuf0};
+    true ->
+        {{[],true,CacheSize}, NewBuf0}
+    end.
 
+% if finished restart
+get_prev_rows(#buffer{state=finished} = Buf, MaxRows) -> get_prev_rows(Buf#buffer{state=started}, MaxRows);
 get_prev_rows(#buffer{row_top=RowTop,tableid=TableId} = Buf, MaxRows) ->
     _CacheSize = ets:info(TableId, size),
     NewRowTop =
@@ -142,11 +158,12 @@ get_prev_rows(#buffer{row_top=RowTop,tableid=TableId} = Buf, MaxRows) ->
             {{[],undefined,undefined}, NewBuf};
         true ->
             ?Debug("get_prev_rows from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, _CacheSize]),
-            {_Rows,_,_} = Result = get_rows_from_ets(NewBuf),
-            ?Debug("Rows ~p OldBuf ~p NewBuf ~p", [length(_Rows), Buf, NewBuf]),
-            {Result, NewBuf}
+            {Rows,Completed,CacheSize,NewBuf0} = get_rows_from_ets(NewBuf),
+            ?Debug("Rows ~p OldBuf ~p NewBuf ~p", [length(Rows), Buf, NewBuf0]),
+            {{Rows,Completed,CacheSize}, NewBuf0}
     end.
 
+get_next_rows(#buffer{state=finished} = Buf, _) -> {{[],undefined,undefined}, Buf};
 get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows) ->
     CacheSize = ets:info(TableId, size),
     NewRowBottom =
@@ -163,9 +180,9 @@ get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows) ->
             {{[],undefined,undefined}, NewBuf};
         true ->
             ?Debug("get_next_rows from ~p to ~p of total ~p rows", [NewRowTop, NewRowBottom, CacheSize]),
-            {_Rows,_,_} = Result = get_rows_from_ets(NewBuf),
-            ?Debug("Rows ~p OldBuf ~p NewBuf ~p", [length(_Rows), Buf, NewBuf]),
-            {Result, NewBuf}
+            {Rows,Completed,CacheSize,NewBuf0} = get_rows_from_ets(NewBuf),
+            ?Debug("Rows ~p OldBuf ~p NewBuf ~p", [length(Rows), Buf, NewBuf0]),
+            {{Rows,Completed,CacheSize}, NewBuf0}
     end.
 
 % EUnit tests --

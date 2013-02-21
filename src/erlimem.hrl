@@ -14,20 +14,20 @@
     case application:get_env(erlimem, logging) of
     {ok, debug} ->
         case __L of
-        dbg -> io:format(user, ?T++" [debug ~p:~p] [_DRVR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
-        nfo -> io:format(user, ?T++" [info  ~p:~p] [_DRVR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
-        err -> io:format(user, ?T++" [error ~p:~p] [_DRVR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        dbg -> io:format(user, ?T++" [debug ~p:~p] [_IMDR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        nfo -> io:format(user, ?T++" [info  ~p:~p] [_IMDR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        err -> io:format(user, ?T++" [error ~p:~p] [_IMDR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
         _ -> ok
         end;
     {ok, info} ->
         case __L of
-        nfo -> io:format(user, ?T++" [info] [_DRVR_] " ++ __F ++ "~n", __A);
-        err -> io:format(user, ?T++" [error] [_DRVR_] " ++ __F ++ "~n", __A);
+        nfo -> io:format(user, ?T++" [info] [_IMDR_] " ++ __F ++ "~n", __A);
+        err -> io:format(user, ?T++" [error] [_IMDR_] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     {ok, error} ->
         case __L of
-        err -> io:format(user, ?T++" [error] [_DRVR_] " ++ __F ++ "~n", __A);
+        err -> io:format(user, ?T++" [error] [_IMDR_] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     _ -> ok

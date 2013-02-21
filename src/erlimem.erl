@@ -3,8 +3,8 @@
 -include("erlimem.hrl").
 -define(SESSMOD, erlimem_session).
 
--define(LOG(_F),    io:format(user, "[TEST] "++_F++"~n", [])).
--define(LOG(_F,_A), io:format(user, "[TEST] "++_F++"~n", _A)).
+-define(LOG(_F),    io:format(user, "[TEST ~3..0B] "++_F++"~n", [?LINE])).
+-define(LOG(_F,_A), io:format(user, "[TEST ~3..0B] "++_F++"~n", [?LINE]++_A)).
 
 %% Application callbacks
 -export([start/0, stop/0, open/3, loglevel/1]).
@@ -29,6 +29,9 @@ open(Type, Opts, Cred) ->
 
 -include_lib("eunit/include/eunit.hrl").
 -define(Table, test_table_123).
+
+-define(RowIdRange(__Rows), [ {from, list_to_integer(lists:nth(1, lists:nth(1,__Rows)))}
+                            , {to, list_to_integer(lists:nth(1, lists:nth(length(__Rows),__Rows)))}]).
 
 %-define(CONTEST, include).
 -ifdef(CONTEST).
@@ -137,10 +140,10 @@ db_test_() ->
         {with, [fun native_apis/1
                 , fun all_tables/1
                 , fun table_create_select_drop/1
-                , fun table_modify/1
-                , fun simul_insert/1
-                , fun table_no_eot/1
-                , fun table_tail/1
+                %, fun table_modify/1
+                %, fun simul_insert/1
+                %, fun table_no_eot/1
+                %, fun table_tail/1
         ]}
         }
     }.
@@ -218,15 +221,30 @@ native_apis({ok, Sess}) ->
 table_create_select_drop({ok, Sess}) ->
     ?LOG("-- create insert select drop (table_create_select_drop) ----", []),
     create_table(Sess, atom_to_list(?Table)),
-    insert_range(Sess, 20, atom_to_list(?Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
+    insert_range(Sess, 200, atom_to_list(?Table)),
+    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     ?LOG("select ~p", [{Clms, Statement}]),
     Statement:start_async_read([]),
     timer:sleep(1000),
-    ?LOG("receiving...", []),
+    ?LOG("Reading first 10 rows", []),    
     {Rows,_,_} = Statement:next_rows(),
+    ?assert(length(Rows) > 0),
+    ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows)),
+    ?LOG("Reading next 10 rows", []),    
+    {Rows1,_,_} = Statement:next_rows(),
+    ?assert(length(Rows1) > 0),
+    ?assertEqual([{from, 11}, {to, 20}], ?RowIdRange(Rows1)),
+    ?LOG("Reading previous 10 rows", []),    
+    {Rows2,_,_} = Statement:prev_rows(),
+    ?assert(length(Rows2) > 0),
+    ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows2)),
+    ?LOG("Reading 10 row from 31", []),    
+    {Rows3,_,_} = Statement:rows_from(31),
+    ?assert(length(Rows3) > 0),
+    ?assertEqual([{from, 31}, {to, 40}], ?RowIdRange(Rows3)),
+    ?LOG("Reading ~p", [Rows3]),
+    {Rows3,_,_} = Statement:rows_from(31),
     Statement:close(),
-    ?LOG("received ~p", [length(Rows)]),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
@@ -241,7 +259,7 @@ table_modify({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
     ?LOG("select ~p", [{Clms, Statement}]),
     Statement:start_async_read([]),
-    timer:sleep(1000),
+    timer:sleep(100),
     {Rows,_,_} = Statement:next_rows(),
     ?LOG("original table from db ~p", [Rows]),
 
@@ -270,8 +288,8 @@ table_modify({ok, Sess}) ->
     ok = Statement:fetch_close(),
     ?LOG("changed rows!", []),
 
-    Statement:start_async_read(),
-    timer:sleep(1000),
+    Statement:start_async_read([]),
+    timer:sleep(100),
     {NewRows1,_,_} = Statement:next_rows(),
     ?assertEqual([["1","7","7"],
                   ["2","11","11"],
