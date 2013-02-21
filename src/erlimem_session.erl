@@ -142,6 +142,7 @@ init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
 
 connect(tcp, {IpAddr, Port, Schema}) ->
     {ok, Ip} = inet:getaddr(IpAddr, inet),
+    ?Info("connecting to ~p:~p", [Ip, Port]),
     case gen_tcp:connect(Ip, Port, []) of
         {ok, Socket} ->
             inet:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
