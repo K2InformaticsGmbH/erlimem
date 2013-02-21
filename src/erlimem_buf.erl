@@ -15,6 +15,7 @@
         , delete/1
         , insert_rows/2
         , modify_rows/3
+        , get_row_at/2
         , get_modified_rows/1
         , row_with_key/2
         , get_prev_rows/2
@@ -119,6 +120,17 @@ build_match(Count, {Head,Expr}) ->
 % TODO - complete state of the buffer (true/false) need to be determined
 get_buffer_max(#buffer{tableid=TableId}) ->
     {ok, ets:info(TableId, size)}.
+
+get_row_at(#buffer{state=S} = Buf, RowNum) when (S =:= started) or (S =:= finished) ->
+    get_row_at(Buf#buffer{state=initialized}, RowNum);
+get_row_at(#buffer{tableid=TableId} = Buf, RowNum) ->
+    ?Debug("row at ~p", [RowNum]),
+    CacheSize = ets:info(TableId, size),
+    if RowNum > CacheSize -> [];
+    true ->
+        {Row,_,_,_} = get_rows_from_ets(Buf#buffer{row_top=RowNum,row_bottom=RowNum}),
+        Row
+    end.
 
 get_rows_from(#buffer{state=finished} = Buf, RowNum, MaxRows) -> get_rows_from(Buf#buffer{state=started}, RowNum, MaxRows);
 get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->

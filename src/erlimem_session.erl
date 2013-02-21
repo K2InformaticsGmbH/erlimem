@@ -169,13 +169,18 @@ handle_call({close_statement, StmtRef}, From, #state{connection=Connection,seco=
 handle_call({update_row, RowId, ColumId, Val, StmtRef}, From, #state{stmts=Stmts} = State) ->
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
-    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
-    NewRow = lists:sublist(Row,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,Row),
-    handle_call({modify_rows, upd, [NewRow], StmtRef}, From, State);
+    Row = erlimem_buf:get_row_at(Buf, RowId),
+    if Row =:= [] -> {reply,{error, "Row not found"},State};
+    true ->
+        [R|_] = Row,
+        NewRow = lists:sublist(R,ColumId) ++ [Val] ++ lists:nthtail(ColumId+1,R),
+        ?Debug("update_row from ~p to ~p", [R, NewRow]),
+        handle_call({modify_rows, upd, [NewRow], StmtRef}, From, State)
+    end;
 handle_call({delete_row, RowId, StmtRef}, From, #state{stmts=Stmts} = State) ->
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
     #drvstmt{buf=Buf} = Stmt,
-    {{[Row],_,_}, _} = erlimem_buf:get_rows_from(Buf, RowId, 1),
+    Row = erlimem_buf:get_row_at(Buf, RowId),
     handle_call({modify_rows, del, [Row], StmtRef}, From, State);
 handle_call({insert_row, Clm, Val, StmtRef}, From, #state{stmts=Stmts} = State) ->
     {_, Stmt} = lists:keyfind(StmtRef, 1, Stmts),
