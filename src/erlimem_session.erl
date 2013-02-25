@@ -112,7 +112,7 @@ init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
                     _ ->
                         erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
                         {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
-                        ?Info("authenticated ~p -> ~p", [{User, Pswd}, S]),
+                        ?Info("authenticated ~p -> ~p", [{User, PswdMD5}, S]),
                         erlimem_cmds:exec({login,S}, Connect),
                         {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
                         ?Info("logged in ~p", [{User, S}]),
@@ -336,7 +336,7 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
     if
         (Sql =/= undefined) andalso IfStmtRefPending ->
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {reply, {error, {'ClientException', "statement creation already in progress!"}}, State#state{idle_timer=NewTimer}};
+            {reply, {error, {'ClientException', {"Statement creation already in progress!", Sql}}}, State#state{idle_timer=NewTimer}};
         true ->
             NewStmts =
                 if (Sql =/= undefined)  ->
