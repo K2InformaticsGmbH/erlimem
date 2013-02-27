@@ -152,8 +152,7 @@ connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
 connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
-handle_call(stop, _From, #state{stmts=Stmts}=State) ->
-    _ = [erlimem_buf:delete(Buf) || #drvstmt{buf=Buf} <- Stmts],
+handle_call(stop, _From, State) ->
     {stop,normal,State};
 handle_call({close_statement, StmtRef}, From, #state{connection=Connection,seco=SeCo,stmts=Stmts}=State) ->
     case lists:keytake(StmtRef, 1, Stmts) of
@@ -478,14 +477,14 @@ handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:
 
 handle_info(timeout, State) ->
     ?Debug([session, self()], "~p close on timeout", [{?MODULE,?LINE}]),
-    close({?MODULE, self()}),
-    {noreply, State};
+    {stop,normal,State};
 handle_info(Info, State) ->
     ?Error([session, self()], "~p unknown info ~p", [{?MODULE,?LINE}, Info]),
     {noreply, State}.
 
-terminate(_Reason, #state{conn_param={Type, Opts},idle_timer=Timer}) ->
+terminate(_Reason, #state{conn_param={Type, Opts},idle_timer=Timer,stmts=Stmts}) ->
     erlang:cancel_timer(Timer),
+    _ = [erlimem_buf:delete(Buf) || #drvstmt{buf=Buf} <- Stmts],
     ?Debug([session, self()], "~p stopped ~p from ~p", [{?MODULE,?LINE}, self(), {Type, Opts}]).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
