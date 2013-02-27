@@ -381,36 +381,37 @@ handle_cast({read_block_async, Opts, StmtRef}, #state{stmts=Stmts, connection=Co
             % A change of options is enough reason to stop any ongoing fetch
             if Opts =/= OldOpts ->  FetchCloseFun(); true -> ok end,
             ?Info("Completed ~p, FetchMode ~p, TailMode ~p", [Completed, FetchMode, TailMode]),
-            Fetch = case {Completed, FetchMode, TailMode} of
-                {undefined,  none, none}  -> true;
-                {undefined,  push, true}  -> true;
-                {undefined,  push, none}  -> true;
-                {undefined,  skip, true}  -> true;
-                {undefined,  skip, none}  -> true;
+            OptChange = (Opts =/= OldOpts),
+            Fetch = case {Completed, FetchMode, TailMode, OptChange} of
+                {undefined,  none, none, _}  -> true;
+                {undefined,  push, true, _}  -> true;
+                {undefined,  push, none, _}  -> true;
+                {undefined,  skip, true, _}  -> true;
+                {undefined,  skip, none, _}  -> true;
 
-                {true,       none, none}  -> false;
-                {true,       push, true}  -> true;
-                {true,       push, false} -> false;
-                {true,       push, none}  -> true;
-                {true,       skip, true}  -> true;
-                {true,       skip, none}  -> true;
+                {true,       none, none, _}  -> false;
+                {true,       push, true, _}  -> true;
+                {true,       push, false, _} -> false;
+                {true,       push, none, _}  -> true;
+                {true,       skip, true, _}  -> true;
+                {true,       skip, none, _}  -> true;
 
-                {false,      none, none}  -> true;
-                {false,      push, true}  -> true;
-                {false,      push, false} -> true;
-                {false,      push, none}  -> true;
-                {false,      skip, true}  -> true;
-                {false,      skip, none}  -> true;
+                {false,      none, none, _}  -> true;
+                {false,      push, true, _}  -> true;
+                {false,      push, false, _} -> true;
+                {false,      push, none, _}  -> true;
+                {false,      skip, true, _}  -> true;
+                {false,      skip, none, _}  -> true;
 
-                {tail,       none, none}  -> true;
-                {tail,       push, true}  -> false;
-                {tail,       push, false} -> false;
-                {tail,       push, none}  -> true;
-                {tail,       skip, true}  -> true;
-                {tail,       skip, none}  -> true
+                {tail,       none, none, _}  -> true;
+                {tail,       push, true, _}  -> false;
+                {tail,       push, false, _} -> false;
+                {tail,       push, none, _}  -> true;
+                {tail,       skip, true, _}  -> true;
+                {tail,       skip, none, _}  -> true
             end,
             % Fetch flag is state less, so a change of options is also considered
-            if Fetch andalso (Opts =/= OldOpts) ->
+            if Fetch ->
                 ?Info("prefetching..."),
                 ?Info("~p fetch_recs_async ~p", [StmtRef, Opts]),
                 erlimem_cmds:exec({fetch_recs_async, SeCo, Opts, StmtRef}, Connection);

@@ -400,12 +400,17 @@ update_random(Max, Count, Rows, NewRows) ->
     [I,PK,_|Rest] = lists:nth(1,B),
     update_random(Max, Count-1, Rows, NewRows ++ [[I,PK,Idx|Rest]]).
 
-insert_range(_Sess, 0, _TableName) -> ok;
-insert_range(Sess, N, TableName) when is_integer(N), N > 0 ->
+insert_range(S, N, T) ->
+    io:format(user, "inserting.... [", []),
+    ins_range(S, N, T).
+
+ins_range(_Sess, 0, _TableName) -> io:format(user, "]~n", []);
+ins_range(Sess, N, TableName) when is_integer(N), N > 0 ->
     Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');",
     Res = Sess:exec(Sql),
-    ?LOG("~p -> ~p", [Sql, Res]),
-    insert_range(Sess, N-1, TableName).
+    %?LOG("~p -> ~p", [Sql, Res]),
+    io:format(user, "~p ", [N]),
+    ins_range(Sess, N-1, TableName).
 %-------------------------------------------------------------------------------------------------------------------
 
 -endif.
