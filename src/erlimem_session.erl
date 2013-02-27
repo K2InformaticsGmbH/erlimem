@@ -87,12 +87,15 @@ update_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {m
 delete_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, del, Rows, StmtRef}).
 insert_rows(Rows,            {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {modify_rows, ins, Rows, StmtRef}).
 prepare_update(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {prepare_update, StmtRef}).
-execute_update(              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {execute_update, StmtRef}).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
 fetch_close(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {fetch_close, StmtRef}).
-start_async_read(Opts,       {?MODULE, StmtRef, Pid}) ->
+start_async_read(Opts, {?MODULE, StmtRef, Pid}) ->
     ok = gen_server:call(Pid, {clear_buf, StmtRef}),
     gen_server:cast(Pid, {read_block_async, Opts, StmtRef}).
+execute_update({?MODULE, StmtRef, Pid}) ->
+    Upds = gen_server:call(Pid, {execute_update, StmtRef}),
+    ok = gen_server:call(Pid, {update_keys, StmtRef, Upds}),
+    ?Info("received new keys ~p", [Upds]).
 
 call(Pid, Msg) ->
     ?Debug("call ~p ~p", [Pid, Msg]),
@@ -305,6 +308,12 @@ handle_call({execute_update, StmtRef}, From, #state{connection=Connection,seco=S
     erlimem_cmds:exec({update_cursor_execute, SeCo, StmtRef, optimistic}, Connection),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {noreply, State#state{idle_timer=NewTimer,pending=From}};
+handle_call({update_keys, StmtRef, Updates}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    {_, #drvstmt{buf=Buf}} = lists:keyfind(StmtRef, 1, Stmts),
+    ok = erlimem_buf:update_keys(Buf, Updates),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {reply, ok, State#state{idle_timer=NewTimer,pending=From}};
 
 handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer

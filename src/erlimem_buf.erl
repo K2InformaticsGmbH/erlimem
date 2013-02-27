@@ -22,8 +22,19 @@
         , get_rows_from/3
         , get_next_rows/2
         , get_buffer_max/1
-        , rfun/1
+        , update_keys/2
         ]).
+
+update_keys(_, []) -> ok;
+update_keys(#buffer{tableid=Tab, rowfun=F} = Buf, [{Id,K}|Updates]) ->
+    case ets:lookup(Tab, Id) of
+        [R] ->
+            ?Info("found ~p @ ~p for replace", [R, Id]),
+            ets:insert(Tab, list_to_tuple([Id, nop, K | F(K)]));
+        _ ->
+            ?Error("table ~p row not found for key update ~p,~p", [Tab, Id,K])
+    end,
+    update_keys(Buf, Updates).
 
 create(RowFun) ->
     #buffer{tableid=ets:new(results, [ordered_set, public])
@@ -50,9 +61,9 @@ modify_rows(#buffer{tableid=TableId}, Op, Rows) when is_atom(Op) ->
     ?Debug("modify_rows from ~p~nto ~p~nwith ~p", [ExistingRows,NewRows,Rows]),
     ets:insert(TableId, [list_to_tuple(R)||R<-NewRows]).
 
+apply_op(_,[],[],ModifiedRows) -> ModifiedRows;
 apply_op(Op, [_|_] = ExistingRows, [F|_] = NewRows, []) when is_list(F)->
     apply_op(Op, ExistingRows, [list_to_tuple([list_to_integer(I)|R]) || [I|R]<-NewRows], []);
-apply_op(_,[],[],ModifiedRows) -> ModifiedRows;
 apply_op(Op,[[Er|_] | ExistingRows],NewRows,ModifiedRows) when is_atom(Op) ->
     {[I,_,K], R} = case lists:split(3, tuple_to_list(Er)) of
         {[_,ins,_], _} = D -> NewOp = ins, D;
@@ -99,7 +110,7 @@ get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tablei
             if ((St =:= started) andalso ((CacheSize =< RowEnd) orelse (RowStart == RowEnd))) % detecting finish
                orelse (St =:= finished) % finished detected earlier
                ->
-                ?Info("--- EOB --- "),
+?Info("--- EOB ---  buffer state ~p ~p", [Buf#buffer.state, {CacheSize, RowEnd, RowStart}]),
                 {[], true, CacheSize, Buf#buffer{state=finished}};
             true ->
                 {NewRows, CacheSize =< RowEnd, CacheSize, Buf#buffer{state=started}}
@@ -109,8 +120,6 @@ get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tablei
             {[], true, CacheSize, Buf}
     end.
 
-rfun(R) -> R.
-    
 build_match(Count) -> build_match(Count, {[],[]}).
 build_match(0, {Head,Expr}) -> {list_to_tuple(Head),Expr};
 build_match(Count, {Head,Expr}) ->
@@ -122,6 +131,7 @@ get_buffer_max(#buffer{tableid=TableId}) ->
     {ok, ets:info(TableId, size)}.
 
 get_row_at(#buffer{state=S} = Buf, RowNum) when (S =:= started) or (S =:= finished) ->
+?Info("--- SOB ---  buffer state ~p", [Buf#buffer.state]),
     get_row_at(Buf#buffer{state=initialized}, RowNum);
 get_row_at(#buffer{tableid=TableId} = Buf, RowNum) ->
     ?Debug("row at ~p", [RowNum]),
@@ -132,7 +142,9 @@ get_row_at(#buffer{tableid=TableId} = Buf, RowNum) ->
         Row
     end.
 
-get_rows_from(#buffer{state=finished} = Buf, RowNum, MaxRows) -> get_rows_from(Buf#buffer{state=started}, RowNum, MaxRows);
+get_rows_from(#buffer{state=finished} = Buf, RowNum, MaxRows) ->
+?Info("--- SOB ---  buffer state ~p", [Buf#buffer.state]),
+    get_rows_from(Buf#buffer{state=started}, RowNum, MaxRows);
 get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->
     CacheSize = ets:info(TableId, size),
     NewRowTop =
@@ -153,7 +165,9 @@ get_rows_from(#buffer{tableid=TableId} = Buf, RowNum, MaxRows) ->
     end.
 
 % if finished restart
-get_prev_rows(#buffer{state=finished} = Buf, MaxRows) -> get_prev_rows(Buf#buffer{state=started}, MaxRows);
+get_prev_rows(#buffer{state=finished} = Buf, MaxRows) ->
+    ?Info("--- SOB ---  buffer state ~p", [Buf#buffer.state]),
+    get_prev_rows(Buf#buffer{state=started}, MaxRows);
 get_prev_rows(#buffer{row_top=RowTop,tableid=TableId} = Buf, MaxRows) ->
     _CacheSize = ets:info(TableId, size),
     NewRowTop =
@@ -175,7 +189,9 @@ get_prev_rows(#buffer{row_top=RowTop,tableid=TableId} = Buf, MaxRows) ->
             {{Rows,Completed,CacheSize}, NewBuf0}
     end.
 
-get_next_rows(#buffer{state=finished} = Buf, _) -> {{[],undefined,undefined}, Buf};
+get_next_rows(#buffer{state=finished} = Buf, _) ->
+    ?Info("--- EOB ---  buffer state ~p", [Buf#buffer.state]),
+    {{[],undefined,undefined}, Buf};
 get_next_rows(#buffer{row_bottom=RowBottom, tableid=TableId} = Buf, MaxRows) ->
     CacheSize = ets:info(TableId, size),
     NewRowBottom =
