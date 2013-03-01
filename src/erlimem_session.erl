@@ -431,7 +431,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
             {error, Exception} ->
                 ?Error("throw ~p", [Exception]),
                 throw(Exception);
-            {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} ->
+            {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} when is_function(Fun) ->
                 ?Debug("RX ~p", [SRslt]),
                 Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
                 {'$stmt_ref_not_rcvd', #drvstmt{cmdstr=Sql}} = lists:keyfind('$stmt_ref_not_rcvd', 1, Stmts),
