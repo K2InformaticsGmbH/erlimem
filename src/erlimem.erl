@@ -1,6 +1,7 @@
 -module(erlimem).
 
 -include("erlimem.hrl").
+-include_lib("imem/include/imem_sql.hrl").
 -define(SESSMOD, erlimem_session).
 
 -define(LOG(_F),    io:format(user, "[TEST ~3..0B] "++_F++"~n", [?LINE])).
@@ -33,7 +34,7 @@ open(Type, Opts, Cred) ->
 -define(RowIdRange(__Rows), [ {from, list_to_integer(lists:nth(1, lists:nth(1,__Rows)))}
                             , {to, list_to_integer(lists:nth(1, lists:nth(length(__Rows),__Rows)))}]).
 
-%-define(CONTEST, include).
+-define(CONTEST, include).
 -ifdef(CONTEST).
 %-------------------------------------------------------------------------------------------------------------------
 db_conn_test_() ->
@@ -42,12 +43,32 @@ db_conn_test_() ->
         fun setup_con/0,
         fun teardown_con/1,
         {with, [fun logs/1
-               , fun all_cons/1
-               , fun pswd_process/1
-               , fun bad_con_reject/1
+               , fun row_fun/1
+               %, fun all_cons/1
+               %, fun pswd_process/1
+               %, fun bad_con_reject/1
         ]}
         }
     }.
+
+row_fun(_) ->
+    ?LOG("---------- checking generated row_fun (row_fun) ------------"),
+    Schema = 'Imem',
+    Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
+    {_, SessLocal} = erlimem:open(tcp, {localhost, 8124, Schema}, Cred),
+    RF = SessLocal:run_cmd(select_rowfun_str, [[#ddColMap{type=integer,tind=1,cind=2}], eu, undefined, undefined]),
+    ?LOG("rowfun local ~p", [RF]),
+    ?assert(is_function(RF)), 
+    ?assertEqual(["5"],RF({{dummy,5},{}})), 
+    {_, SessMpro} = erlimem:open(tcp, {localhost, 8125, Schema}, Cred),
+    RF1 = SessMpro:run_cmd(select_rowfun_str, [[#ddColMap{type=integer,tind=1,cind=2}], eu, undefined, undefined]),
+    ?LOG("rowfun remote ~p", [RF1]),
+    ?assert(is_function(RF1)), 
+    ?assertEqual(["5"],RF1({{dummy,5},{}})), 
+    timer:sleep(1000),
+    %% SessLocal:close(),
+    %% SessMpro:close(),
+    ?LOG("------------------------------------------------------------").
 
 setup_con() ->
     ?LOG("+-----------------------------------------------------------+"),
