@@ -37,6 +37,7 @@ update_keys(#buffer{tableid=Tab, rowfun=F} = Buf, [{Id,K}|Updates]) ->
     update_keys(Buf, Updates).
 
 create(RowFun) ->
+    ?Info(">>>>>>>>>>>>>>>>>>>>>> received row fun ~p", [RowFun]),
     #buffer{tableid=ets:new(results, [ordered_set, public])
            , rowfun = RowFun
     }.
@@ -88,6 +89,7 @@ insert_new_rows(#buffer{tableid=TableId}, Rows) ->
 get_rows_from_ets(#buffer{row_top=RowStart0, row_bottom=RowEnd, rowfun=F, tableid=TableId, state=St} = Buf) ->
     CacheSize = ets:info(TableId, size),
     RowStart = if RowStart0 =:= 0 -> 1; true -> RowStart0 end, % ETS tables are indexed from 1
+    ?Info(">>>>>>>>>>>>>>>>>>>>>> applying row fun ~p", [F]),
     case ets:lookup(TableId, RowStart) of
         [FirstRow] ->
             {MatchHead, MatchExpr} = build_match(size(FirstRow)),

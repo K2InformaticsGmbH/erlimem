@@ -6,9 +6,6 @@
 
 -record(state, {
     status=closed,
-    port,
-    pool,
-    session_id,
     stmts = [],
     connection = {type, handle},
     conn_param,
