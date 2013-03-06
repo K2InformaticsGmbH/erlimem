@@ -155,7 +155,7 @@ connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined},
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
 handle_call(stop, _From, State) ->
-    {stop,normal,State};
+    {stop,normal, ok, State};
 handle_call({close_statement, StmtRef}, From, #state{connection=Connection,seco=SeCo,stmts=Stmts}=State) ->
     case lists:keytake(StmtRef, 1, Stmts) of
         {value, {StmtRef, #drvstmt{buf=Buf}}, NewStmts} ->
@@ -220,7 +220,7 @@ handle_call({rows_from, StmtRef, RowId}, _From, #state{idle_timer=Timer,stmts=St
                 , cmdstr = Sql} = Stmt
     } = lists:keyfind(StmtRef, 1, Stmts),
     {{Rows,Status,CatchSize}, NewBuf} = erlimem_buf:get_rows_from(Buf, RowId, MaxRows),
-    NewFReq = if 
+    NewFReq = if
         (FReq < ?MAX_PREFETCH_ON_FLIGHT)  -> FReq + 1;
         (FReq == ?MAX_PREFETCH_ON_FLIGHT) -> ?MAX_PREFETCH_ON_FLIGHT;
         true                              -> FReq
@@ -256,7 +256,7 @@ handle_call({next_rows, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = 
                 , fetchopts = Opts} = Stmt
     } = lists:keyfind(StmtRef, 1, Stmts),
     {{Rows,Status,CatchSize}, NewBuf} = erlimem_buf:get_next_rows(Buf, MaxRows),
-    NewFReq = if 
+    NewFReq = if
         (FReq < ?MAX_PREFETCH_ON_FLIGHT)  -> FReq + 1;
         (FReq == ?MAX_PREFETCH_ON_FLIGHT) -> ?MAX_PREFETCH_ON_FLIGHT;
         true                              -> FReq
@@ -423,7 +423,7 @@ handle_cast(Request, State) ->
     ?Error([session, self()], "unknown cast ~p", [Request]),
     {noreply, State}.
 
-% 
+%
 % local / rpc / tcp fallback
 %
 handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
@@ -483,7 +483,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
             {noreply, State}
     end;
 
-% 
+%
 % tcp
 %
 handle_info({tcp,S,Pkt}, #state{buf=Buf, pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
