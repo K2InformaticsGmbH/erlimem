@@ -141,7 +141,10 @@ get_row_at(#buffer{tableid=TableId} = Buf, RowNum) ->
     if RowNum > CacheSize -> [];
     true ->
         {Row,_,_,_} = get_rows_from_ets(Buf#buffer{row_top=RowNum,row_bottom=RowNum}),
-        Row
+        case Row of
+            [R|_] when is_list(R) -> R;
+            _ -> []
+        end
     end.
 
 get_rows_from(#buffer{state=finished} = Buf, RowNum, MaxRows) ->
