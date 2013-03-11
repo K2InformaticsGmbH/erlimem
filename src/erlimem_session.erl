@@ -35,6 +35,7 @@
         , exec/4
         , read_block/2
         , run_cmd/3
+        , get_stmts/1
 		]).
 
 % statement APIs
@@ -93,6 +94,9 @@ execute_update({?MODULE, StmtRef, Pid}) ->
     Upds = gen_server:call(Pid, {execute_update, StmtRef}),
     ok = gen_server:call(Pid, {update_keys, StmtRef, Upds}),
     ?Info("received new keys ~p", [Upds]).
+
+get_stmts(PidStr) ->
+    gen_server:call(list_to_pid(PidStr), get_stmts).
 
 call(Pid, Msg) ->
     ?Debug("call ~p ~p", [Pid, Msg]),
@@ -154,6 +158,8 @@ connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
 connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
+handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->    
+    {reply,[S|| {S,_} <- Stmts],State};
 handle_call(stop, _From, State) ->
     {stop,normal, ok, State};
 handle_call({close_statement, StmtRef}, From, #state{connection=Connection,seco=SeCo,stmts=Stmts}=State) ->
@@ -441,7 +447,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                                               , maxrows  = MaxRows
                                               , cmdstr   = Sql}
                             }),
-                ?Info("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
+                ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
                 gen_server:reply(Form, Rslt),
                 {noreply, State#state{stmts=NStmts}};
             Term ->
