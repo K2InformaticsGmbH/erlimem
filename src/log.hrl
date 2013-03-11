@@ -1,34 +1,34 @@
--define(H,  element(1,erlang:time())).
--define(M,  element(2,erlang:time())).
--define(S,  element(3,erlang:time())).
--define(MS, element(3, erlang:now()) div 1000 rem 1000).
-
--define(T, lists:flatten(io_lib:format("~2..0B:~2..0B:~2..0B.~3..0B", [?H,?M,?S,?MS]))).
+-define(T,
+(fun() ->
+    {_,_,__McS} = __Now = erlang:now(),
+    {{__YYYY,__MM,__DD},{__H,__M,__S}} = calendar:now_to_local_time(__Now),
+    lists:flatten(io_lib:format("~2..0B.~2..0B.~4..0B ~2..0B:~2..0B:~2..0B.~6..0B", [__DD,__MM,__YYYY,__H,__M,__S,__McS rem 1000000]))
+end)()).
 
 -ifndef(NOLOGGING).
--define(LOG(__L,__M,__F,__A),
+-define(LOG(__T,__L,__M,__F,__A),
     case application:get_env(erlimem, logging) of
     {ok, debug} ->
         case __L of
-        dbg -> io:format(user, ?T++" [debug ~p:~p] [_IMDR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
-        nfo -> io:format(user, ?T++" [info  ~p:~p] [_IMDR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
-        err -> io:format(user, ?T++" [error ~p:~p] [_IMDR_] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        dbg -> io:format(user, ?T++" [debug ~p:~p] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        nfo -> io:format(user, ?T++" [info  ~p:~p] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        err -> io:format(user, ?T++" [error ~p:~p] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
         _ -> ok
         end;
     {ok, info} ->
         case __L of
-        nfo -> io:format(user, ?T++" [info] [_IMDR_] " ++ __F ++ "~n", __A);
-        err -> io:format(user, ?T++" [error] [_IMDR_] " ++ __F ++ "~n", __A);
+        nfo -> io:format(user, ?T++" [info] ["++__T++"] " ++ __F ++ "~n", __A);
+        err -> io:format(user, ?T++" [error] ["++__T++"] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     {ok, error} ->
         case __L of
-        err -> io:format(user, ?T++" [error] [_IMDR_] " ++ __F ++ "~n", __A);
+        err -> io:format(user, ?T++" [error] ["++__T++"] " ++ __F ++ "~n", __A);
         _ -> ok
         end;
     _ -> ok
     end
 ).
 -else.
--define(LOG(__L,__M,__F,__A), ok = ok).
+-define(LOG(__T,__L,__M,__F,__A), ok = ok).
 -endif.
