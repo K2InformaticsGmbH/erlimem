@@ -29,8 +29,14 @@ update_keys(_, []) -> ok;
 update_keys(#buffer{tableid=Tab, rowfun=F} = Buf, [{Id,K}|Updates]) ->
     case ets:lookup(Tab, Id) of
         [R] ->
-            ?Info("found ~p @ ~p for replace", [R, Id]),
-            ets:insert(Tab, list_to_tuple([Id, nop, K | F(K)]));
+            case element(2, R) of
+                del ->
+                    ?Debug("[del] found ~p~nfor ~p~n@ ~p", [R, K, Id]),
+                    ets:delete(Tab, Id);
+                O ->
+                    ?Debug("[~p] found ~p~nfor ~p~n@ ~p", [O, R, K, Id]),
+                    ets:insert(Tab, list_to_tuple([Id, nop, K | F(K)]))
+            end;
         _ ->
             ?Error("table ~p row not found for key update ~p,~p", [Tab, Id,K])
     end,
