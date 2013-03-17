@@ -439,3 +439,154 @@ ins_range(Sess, N, TableName) when is_integer(N), N > 0 ->
 
 -endif.
 
+% - %% TESTS ------------------------------------------------------------------
+% - 
+% - -include_lib("eunit/include/eunit.hrl").
+% - 
+% - -define(button(__Button), gui_req("button", __Button, self())).
+% - 
+% - setup() -> 
+% -     ?imem_test_setup().
+% - 
+% - teardown(_SKey) -> 
+% -     catch imem_meta:drop_table(def),
+% -     ?imem_test_teardown().
+% - 
+% - db_test_() ->
+% -     {timeout, 20000, 
+% -         {
+% -             setup,
+% -             fun setup/0,
+% -             fun teardown/1,
+% -             {with, [
+% -                   fun test_without_sec/1
+% -                 %% , fun test_with_sec/1
+% -             ]}
+% -         }
+% -     }.
+% -     
+% - test_without_sec(_) -> 
+% -     test_with_or_without_sec(false).
+% - 
+% - % test_with_sec(_) ->
+% - %     test_with_or_without_sec(true).
+% - 
+% - test_with_or_without_sec(IsSec) ->
+% -     try
+% -         _ClEr = 'ClientError',
+% -         % SeEx = 'SecurityException',
+% -         ?Info("----TEST--- ~p ----Security ~p", [?MODULE, IsSec]),
+% - 
+% -         ?Info("schema ~p", [imem_meta:schema()]),
+% -         ?Info("data nodes ~p", [imem_meta:data_nodes()]),
+% -         ?assertEqual(true, is_atom(imem_meta:schema())),
+% -         ?assertEqual(true, lists:member({imem_meta:schema(),node()}, imem_meta:data_nodes())),
+% - 
+% -         ?assertEqual([],receive_raw()),
+% - 
+% -         SKey=case IsSec of
+% -             true ->     ?imem_test_admin_login();
+% -             false ->    none
+% -         end,
+% - 
+% - 
+% -     %% test table def
+% - 
+% -         ?assertEqual(ok, imem_sql:exec(SKey, 
+% -                 "create table def (
+% -                     col1 varchar2(10), 
+% -                     col2 integer
+% -                 );"
+% -                 , 0, 'Imem', IsSec)),
+% - 
+% -         ?assertEqual(ok, insert_range(SKey, 111, def, 'Imem', IsSec)),
+% - 
+% - 
+% -         % Fsm = start(SKey,"fsm test",10,false,"select * from def;",self()),
+% -         Fsm = start(SKey,"fsm test",10,false,"select * from def order by col2;",self()),
+% -         ?Info("test client pid ~p", [self()]),
+% -         ?Info("fsm object id ~p", [Fsm]),
+% -         Fsm:?button(">"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button(">"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button("|<"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button(">"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button(">|..."),
+% -         receive_respond(Fsm),
+% -         Fsm:?button(">"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button("<<"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button("<<"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button("<<"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button("<<"),
+% -         receive_respond(Fsm),
+% -         Fsm:?button(33),
+% -         receive_respond(Fsm),
+% -         Fsm:?button(77),
+% -         receive_respond(Fsm),
+% -         Fsm:?button("close"),
+% - 
+% -         ?assertEqual(ok, imem_sql:exec(SKey, "drop table def;", 0, 'Imem', IsSec)),
+% - 
+% -         case IsSec of
+% -             true ->     ?imem_logout(SKey);
+% -             false ->    ok
+% -         end
+% - 
+% -     catch
+% -         Class:Reason ->  ?Info("Exception ~p:~p~n~p", [Class, Reason, erlang:get_stacktrace()]),
+% -         ?assert( true == "all tests completed")
+% -     end,
+% -     ok. 
+% - 
+% - %% --Interface functions  (calling imem_if for now, not exported) ---------
+% - 
+% - if_call_mfa(IsSec,Fun,Args) ->
+% -     case IsSec of
+% -         true -> apply(imem_sec,Fun,Args);
+% -         _ ->    apply(imem_meta, Fun, lists:nthtail(1, Args))
+% -     end.
+% - 
+% - insert_range(_SKey, 0, _Table, _Schema, _IsSec) -> ok;
+% - insert_range(SKey, N, Table, Schema, IsSec) when is_integer(N), N > 0 ->
+% -     if_call_mfa(IsSec, write,[SKey,Table,{Table,integer_to_list(N),N}]),
+% -     insert_range(SKey, N-1, Table, Schema, IsSec).
+% - 
+% - receive_raw() ->
+% -     receive_raw(50, []).
+% - 
+% - % receive_raw(Timeout) ->
+% - %     receive_raw(Timeout, []).
+% - 
+% - receive_raw(Timeout,Acc) ->    
+% -     case receive 
+% -             R ->    % ?Info("got:~n~p", [R]),
+% -                     R
+% -         after Timeout ->
+% -             stop
+% -         end of
+% -         stop ->     lists:reverse(Acc);
+% -         Result ->   receive_raw(Timeout,[Result|Acc])
+% -     end.
+% - 
+% - receive_respond(Fsm) ->
+% -     process_responses(Fsm,receive_raw()).
+% - 
+% - process_responses(_Fsm,[]) -> ok;
+% - process_responses(Fsm,[R|Responses]) ->
+% -     case R of 
+% -       #gres{loop=undefined,rows=_Rows} ->  
+% -          ok; %?Info("~p", [_Rows]);
+% -       #gres{loop=">|..."} ->    ok;
+% -       #gres{loop=Loop} ->
+% -           timer:sleep(30),       
+% -           Fsm:?button(Loop),
+% -           receive_respond(Fsm)
+% -     end,
+% -     process_responses(Fsm,Responses).
