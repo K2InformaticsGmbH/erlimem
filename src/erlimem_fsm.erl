@@ -2,6 +2,7 @@
 -behaviour(gen_fsm).
 
 -include("erlimem.hrl").
+-include("gres.hrl").
 -include_lib("imem/include/imem_sql.hrl").
 
 -define(KeyMax,[]).     %% value bigger than any possible sort key {SortFun(Recs),Id}

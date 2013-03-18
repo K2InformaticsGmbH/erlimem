@@ -1,6 +1,7 @@
 -module(erlimem).
 
 -include("erlimem.hrl").
+-include("gres.hrl").
 -include_lib("imem/include/imem_sql.hrl").
 -define(SESSMOD, erlimem_session).
 

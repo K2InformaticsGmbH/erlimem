@@ -2,6 +2,7 @@
 -behaviour(gen_server).
 
 -include("erlimem.hrl").
+-include("gres.hrl").
 -include_lib("imem/include/imem_sql.hrl").
 
 -record(state, {
@@ -131,10 +132,10 @@ handle_call({button, StmtRef, Button}, From, #state{idle_timer=Timer,stmts=Stmts
     ?Debug("~p in statements ~p", [StmtRef, Stmts]),
     {_, #drvstmt{fsm=StmtFsm}} = lists:keyfind(StmtRef, 1, Stmts),     
     StmtFsm:gui_req("button", Button,
-       fun(#gres{} = Gres) ->
-           ?Debug("resp for gui ~p", [Gres]),
-           gen_server:reply(From, Gres)
-       end),
+        fun(#gres{} = Gres) ->
+            ?Debug("resp for gui ~p", [Gres]),
+            gen_server:reply(From, Gres)
+        end),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {noreply,State#state{idle_timer=NewTimer}};
 
