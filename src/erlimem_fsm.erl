@@ -159,7 +159,7 @@ fetch(FetchMode,TailMode, #state{ctx = #ctx{sess_pid=DrvSessPid},stmtRef=StmtRef
         {FM,TM} ->        [{fetch_mode,FM},{tailMode,TM}]
     end,
     Result = gen_server:call(DrvSessPid, [fetch_recs_async, Opts, StmtRef]),
-    % ?Info("fetch (~p, ~p) ~p", [FetchMode, TailMode, Result]),
+    ?Info("fetch (~p, ~p) ~p", [FetchMode, TailMode, Result]),
     ok = Result,
     NewPfc=State#state.pfc+1,
     State#state{pfc=NewPfc}.

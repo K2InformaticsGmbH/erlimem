@@ -261,7 +261,7 @@ handle_call({button, StmtRef, Button}, From, #state{idle_timer=Timer,stmts=Stmts
     {_, #drvstmt{fsm=StmtFsm}} = lists:keyfind(StmtRef, 1, Stmts),     
     StmtFsm:gui_req("button", Button,
        fun(#gres{} = Gres) ->
-           ?Info("resp for gui ~p", [Gres]),
+           ?Debug("resp for gui ~p", [Gres]),
            gen_server:reply(From, Gres)
        end),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
