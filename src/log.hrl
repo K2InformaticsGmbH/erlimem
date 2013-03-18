@@ -10,9 +10,9 @@ end)()).
     case application:get_env(erlimem, logging) of
     {ok, debug} ->
         case __L of
-        dbg -> io:format(user, ?T++" [debug ~p:~p] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
-        nfo -> io:format(user, ?T++" [info  ~p:~p] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
-        err -> io:format(user, ?T++" [error ~p:~p] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        dbg -> io:format(user, ?T++" [debug ~p:~4..0B] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        nfo -> io:format(user, ?T++" [info  ~p:~4..0B] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
+        err -> io:format(user, ?T++" [error ~p:~4..0B] ["++__T++"] " ++ __F ++ "~n", [?MODULE, ?LINE] ++ __A);
         _ -> ok
         end;
     {ok, info} ->

@@ -156,11 +156,12 @@ fetch(FetchMode,TailMode, #state{ctx = #ctx{sess_pid=DrvSessPid},stmtRef=StmtRef
     Opts = case {FetchMode,TailMode} of
         {none,none} ->    [];
         {FM,none} ->      [{fetch_mode,FM}];
-        {FM,TM} ->        [{fetch_mode,FM},{tailMode,TM}]
+        {FM,TM} ->        [{fetch_mode,FM},{tail_mode,TM}]
     end,
-    Result = gen_server:call(DrvSessPid, [fetch_recs_async, Opts, StmtRef]),
-    ?Info("fetch (~p, ~p) ~p", [FetchMode, TailMode, Result]),
-    ok = Result,
+    case gen_server:call(DrvSessPid, [fetch_recs_async, Opts, StmtRef]) of
+        ok -> ?Info("fetch (~p, ~p) ok", [FetchMode, TailMode]);
+        {error, Error} -> ?Error("fetch exception ~p", [Error])
+    end,
     NewPfc=State#state.pfc+1,
     State#state{pfc=NewPfc}.
 
@@ -585,6 +586,9 @@ handle_sync_event(_Event, _From, empty, StateData) ->
 handle_info({_Pid,{Rows,Completed}}, SN, State) ->
     Fsm = {?MODULE,self()},
     Fsm:rows({Rows,Completed}),
+    {next_state, SN, State, infinity};
+handle_info(Unknown, SN, State) ->
+    ?Info("unknown handle info ~p", [Unknown]),
     {next_state, SN, State, infinity}.
 
 %% --------------------------------------------------------------------
@@ -612,22 +616,19 @@ gui_max(BL) -> 3 * BL.
 gui_response(Gres0, #state{nav=raw,rawCnt=RawCnt,replyToFun=ReplyTo}=State) ->
     Gres1 = Gres0#gres{cnt=RawCnt,toolTip=integer_to_list(RawCnt)},
     ReplyTo(Gres1),
-    ?Info("ReplyTo ~p", [ReplyTo]),
-    % ?Info("Gres ~p", [Gres1]),
+    ?Debug("gui_response ~p", [Gres1]),
     State;
 gui_response(Gres0, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,guiCol=true,replyToFun=ReplyTo}=State) ->
     ToolTip = integer_to_list(RawCnt) ++ [$/] ++ integer_to_list(IndCnt) ++ " page needs refresh",
     Gres1 = Gres0#gres{cnt=IndCnt,toolTip=ToolTip},
     ReplyTo(Gres1),
-    ?Info("ReplyTo  ~p", [ReplyTo]),
-    % ?Info("Gres  ~p", [Gres1]),
+    ?Debug("gui_response  ~p", [Gres1]),
     State;
 gui_response(Gres, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,replyToFun=ReplyTo}=State) ->
     ToolTip = integer_to_list(RawCnt) ++ [$/] ++ integer_to_list(IndCnt),
     Gres1 = Gres#gres{cnt=IndCnt,toolTip=ToolTip},
     ReplyTo(Gres1),
-    ?Info("ReplyTo ~p", [ReplyTo]),
-    % ?Info("Gres ~p", [Gres1]),
+    ?Debug("gui_response ~p", [Gres1]),
     State.
 
 gui_close(GuiResult,State) -> 

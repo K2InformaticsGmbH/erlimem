@@ -26,7 +26,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
         case Media of
             undefined ->
                 ?Debug("LOCAL ___TX___ ~p", [{Node, Mod, Fun, Args}]),
-                Res = case Node of
+                case Node of
                     Node when Node =:= node() ->
                         ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
                         ExecRes = apply(Mod, Fun, Args),
@@ -35,8 +35,7 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
                     _ ->
                         ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
                         self() ! rpc:call(Node, Mod, Fun, Args)
-                end,
-                if Fun =/= fetch_recs_async -> Res; true -> ok end;
+                end;
             Socket ->
                 ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
                 gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args]))
