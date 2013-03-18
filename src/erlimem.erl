@@ -231,9 +231,9 @@ all_tables({ok, Sess}) ->
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
     ?LOG("~p -> ~p", [Sql, {Clms, Statement}]),
-    Rows = Statement:gui_req(">|"),
+    Rows = Statement:gui_req(<<">|">>),
     ?LOG("received ~p", [Rows]),
-    Statement:gui_req("close"),
+    Statement:gui_req(<<"close">>),
     ?LOG("statement ~p closed", [Statement]),
     ?LOG("------------------------------------------------------------").
 
@@ -244,27 +244,27 @@ table_create_select_navigate_drop({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     ?LOG("select ~p", [{Clms, Statement}]),
 
-    Rows = Statement:gui_req(">"),
+    Rows = Statement:gui_req(<<">">>),
     ?assert(length(Rows#gres.rows) > 0),
     ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows#gres.rows)),
 
-    Rows0 = Statement:gui_req(">"),
+    Rows0 = Statement:gui_req(<<">">>),
     ?assert(length(Rows0#gres.rows) > 0),
     ?assertEqual([{from, 11}, {to, 20}], ?RowIdRange(Rows0#gres.rows)),
 
-    Rows1 = Statement:gui_req(">>"),
+    Rows1 = Statement:gui_req(<<">>">>),
     ?assert(length(Rows#gres.rows) > 0),
     ?assertEqual([{from, 31}, {to, 40}], ?RowIdRange(Rows1#gres.rows)),
 
-    Rows2 = Statement:gui_req("<<"),
+    Rows2 = Statement:gui_req(<<"<<">>),
     ?assert(length(Rows2#gres.rows) > 0),
     ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(Rows2#gres.rows)),
 
-    Rows3 = Statement:gui_req(">"),
+    Rows3 = Statement:gui_req(<<">">>),
     ?assert(length(Rows3#gres.rows) > 0),
     ?assertEqual([{from, 26}, {to, 35}], ?RowIdRange(Rows3#gres.rows)),
 
-    Rows4 = Statement:gui_req("|<"),
+    Rows4 = Statement:gui_req(<<"|<">>),
     ?assert(length(Rows4#gres.rows) > 0),
     ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows4#gres.rows)),
 
@@ -280,7 +280,7 @@ table_create_select_navigate_drop({ok, Sess}) ->
     ?LOG("|< Read rows from 1 to 10", []),
     ?LOG("@ 25 Read 16 row from 25", []),
 
-    Statement:gui_req("close"),
+    Statement:gui_req(<<"close">>),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
@@ -291,27 +291,27 @@ table_sort_navigate({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++" order by col2;", 10),
     ?LOG("select ~p", [{Clms, Statement}]),
 
-    Rows = Statement:gui_req(">"),
+    Rows = Statement:gui_req(<<">">>),
     ?assert(length(Rows#gres.rows) > 0),
     ?assertEqual([{from, 4}, {to, 3}], ?RowIdRange(Rows#gres.rows)),
 
-    Rows0 = Statement:gui_req(">"),
+    Rows0 = Statement:gui_req(<<">">>),
     ?assert(length(Rows0#gres.rows) > 0),
     ?assertEqual([{from, 17}, {to, 36}], ?RowIdRange(Rows0#gres.rows)),
 
-    Rows1 = Statement:gui_req(">>"),
+    Rows1 = Statement:gui_req(<<">>">>),
     ?assert(length(Rows#gres.rows) > 0),
     ?assertEqual([{from, 159}, {to, 157}], ?RowIdRange(Rows1#gres.rows)),
 
-    Rows2 = Statement:gui_req("<<"),
+    Rows2 = Statement:gui_req(<<"<<">>),
     ?assert(length(Rows2#gres.rows) > 0),
     ?assertEqual([{from, 89}, {to, 154}], ?RowIdRange(Rows2#gres.rows)),
 
-    Rows3 = Statement:gui_req(">"),
+    Rows3 = Statement:gui_req(<<">">>),
     ?assert(length(Rows3#gres.rows) > 0),
     ?assertEqual([{from, 181}, {to, 179}], ?RowIdRange(Rows3#gres.rows)),
 
-    Rows4 = Statement:gui_req("|<"),
+    Rows4 = Statement:gui_req(<<"|<">>),
     ?assert(length(Rows4#gres.rows) > 0),
     ?assertEqual([{from, 136}, {to, 72}], ?RowIdRange(Rows4#gres.rows)),
 
@@ -327,7 +327,7 @@ table_sort_navigate({ok, Sess}) ->
     ?LOG("|< Read rows from 136 to 72", []),
     ?LOG("@ 25 Read 94 row from 44", []),
 
-    Statement:gui_req("close"),
+    Statement:gui_req(<<"close">>),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
@@ -342,7 +342,7 @@ table_modify({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
     ?LOG("select ~p", [{Clms, Statement}]),
 
-    Rows = Statement:gui_req(">|"),
+    Rows = Statement:gui_req(<<">|">>),
     ?assert(length(Rows#gres.rows) > 0),
     ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows#gres.rows)),
     ?LOG("original table from db ~p", [Rows#gres.rows]),
@@ -381,7 +381,7 @@ table_modify({ok, Sess}) ->
     %%               ["4","12","12"]], NewRows1),
     %% ?LOG("modified table from db ~p", [NewRows1]),
 
-    Statement:gui_req("close"),
+    Statement:gui_req(<<"close">>),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
@@ -392,15 +392,15 @@ simul_insert({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     ?LOG("select ~p", [{Clms, Statement}]),
 
-    Rows = Statement:gui_req(">"),
+    Rows = Statement:gui_req(<<">">>),
     ?LOG("received ~p", [Rows#gres.rows]),
 
     ?LOG("receiving async...", []),
     insert_async(Sess, 20, atom_to_list(?Table)),
-    ExtraRows = recv_delay(Statement, ">", 10, []),
+    ExtraRows = recv_delay(Statement, <<">">>, 10, []),
     ?LOG("received ~p", [ExtraRows]),
 
-    Statement:gui_req("close"),
+    Statement:gui_req(<<"close">>),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
@@ -411,10 +411,10 @@ table_tail({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 5),
     ?LOG("select ~p", [{Clms, Statement}]),
 
-    Rows = Statement:gui_req(">"),
+    Rows = Statement:gui_req(<<">">>),
     ?LOG("received ~p", [Rows#gres.rows]),
 
-    Rows0 = Statement:gui_req(">|..."),
+    Rows0 = Statement:gui_req(<<">|...">>),
     ?LOG("received ~p", [Rows0#gres.rows]),
     ?LOG("receiving async...", []),
 
@@ -424,7 +424,7 @@ table_tail({ok, Sess}) ->
     ?LOG("received async ~p", [AsyncRows]),
     ?assertEqual(20, length(AsyncRows)),
 
-    Statement:gui_req("close"),
+    Statement:gui_req(<<"close">>),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
