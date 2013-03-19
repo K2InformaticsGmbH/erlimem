@@ -1036,6 +1036,38 @@ serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
             gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
     end;
+serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={"button",<<">|...">>,RT},tailLock=TailLock}=State0) ->
+    if
+        TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
+        (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
+        (BufBot == GuiBot) andalso (GuiCol == false) -> State0;     % no new data, nothing .. do, keep stack
+        (GuiCnt == 0) ->                                            % (re)initialize .. buffer bottom
+            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
+            serve_bot(tailing,<<"tail">>,State0#state{stack=undefined,replyToFun=RT});
+        (GuiCol == false) ->
+            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
+            gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT});
+        true ->
+            % serve new data at the bottom of the buffer, ask client .. come back
+            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
+            gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
+    end;
+serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={"button",<<"...">>,RT},tailLock=TailLock}=State0) ->
+    if
+        TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
+        (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
+        (BufBot == GuiBot) andalso (GuiCol == false) -> State0;     % no new data, nothing .. do, keep stack
+        (GuiCnt == 0) ->                                            % (re)initialize .. buffer bottom
+            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
+            serve_bot(tailing,<<"tail">>,State0#state{stack=undefined,replyToFun=RT});
+        (GuiCol == false) ->
+            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
+            gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT});
+        true ->
+            % serve new data at the bottom of the buffer, ask client .. come back
+            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
+            gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
+    end;
 serve_stack(_ , State) -> State.
 
 
