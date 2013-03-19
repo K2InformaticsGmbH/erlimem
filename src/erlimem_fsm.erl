@@ -963,7 +963,7 @@ serve_bot(SN, Loop, #state{nav=Nav,bl=BL,gl=GL,bufCnt=BufCnt,bufBot=BufBot,guiCn
     if
         (BufCnt == 0) ->
             %% no data, serve empty
-            serve_empty(#gres{state=SN,loop=Loop},false,State0);         
+            serve_empty(SN,false,State0);         
         (GuiCnt == 0) ->
             %% uninitialized view, must refresh    
             gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop},State0); 
