@@ -131,14 +131,19 @@ handle_call(stop, _From, State) ->
 handle_call({button, StmtRef, Button}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     ?Debug("~p in statements ~p", [StmtRef, Stmts]),
-    {_, #drvstmt{fsm=StmtFsm}} = lists:keyfind(StmtRef, 1, Stmts),     
-    StmtFsm:gui_req("button", Button,
-        fun(#gres{} = Gres) ->
-            ?Debug("resp for gui ~p", [Gres]),
-            gen_server:reply(From, Gres)
-        end),
-    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-    {noreply,State#state{idle_timer=NewTimer}};
+    case lists:keyfind(StmtRef, 1, Stmts) of
+        {_, #drvstmt{fsm=StmtFsm}} ->
+            StmtFsm:gui_req("button", Button,
+                fun(#gres{} = Gres) ->
+                    ?Debug("resp for gui ~p", [Gres]),
+                    gen_server:reply(From, Gres)
+                end),
+            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+            {noreply,State#state{idle_timer=NewTimer}};
+        false ->
+            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+            {reply,#gres{},State#state{idle_timer=NewTimer}}
+    end;
 handle_call({columns, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     case lists:keyfind(StmtRef, 1, Stmts) of
@@ -239,7 +244,7 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
                                        Completed =:= false;
                                        Completed =:= tail ->
                     StmtFsm:rows({Rows,Completed}),
-                    ?Info("~p __RX__ received rows ~p status ~p", [StmtRef, length(Rows), Completed]),
+                    ?Debug("~p __RX__ received rows ~p status ~p", [StmtRef, length(Rows), Completed]),
                     {noreply, State};
                 Unknown ->
                     ?Error([session, self()], "async_resp unknown resp ~p", [Unknown]),

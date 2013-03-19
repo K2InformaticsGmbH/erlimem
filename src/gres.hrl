@@ -1,5 +1,5 @@
 -record(gres,   { %% response sent back .. gui
-                  operation           %% rep (replace) | app (append) | prp (prepend) | nop | close
+                  operation           %% rpl (replace) | app (append) | prp (prepend) | nop | close
                 , cnt = 0             %% current buffer size (raw table or index table size)
                 , toolTip = <<"">>    %% current buffer sizes RawCnt/IndCnt plus status information
                 , message = <<"">>    %% error message
