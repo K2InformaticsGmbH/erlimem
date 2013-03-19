@@ -21,14 +21,14 @@
 
 -record(drvstmt, {
         fsm,
-        result,
+        columns,
         maxrows,
         completed,
         cmdstr
     }).
 
 %% session APIs
--export([close/1
+-export([ close/1
         , exec/2
         , exec/3
         , exec/4
@@ -37,18 +37,19 @@
 		]).
 
 %% gen_server callbacks
--export([
-    init/1,
-    handle_call/3,
-    handle_cast/2,
-    handle_info/2,
-    terminate/2,
-    code_change/3]).
+-export([ init/1
+        , handle_call/3
+        , handle_cast/2
+        , handle_info/2
+        , terminate/2
+        , code_change/3
+        ]).
 
 %% statement APIs
--export([
-    gui_req/2
-]).
+-export([ get_columns/1
+        , gui_req/2
+        , row_with_key/2
+        ]).
 
 close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
@@ -57,11 +58,11 @@ exec(StmtStr,                                    Ctx) -> exec(StmtStr, 0, Ctx).
 exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
 exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
-%row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
+row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
 gui_req(Button,              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {button, StmtRef, Button}).
+get_columns(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {columns, StmtRef}).
 
-get_stmts(PidStr) ->
-    gen_server:call(list_to_pid(PidStr), get_stmts).
+get_stmts(PidStr) -> gen_server:call(list_to_pid(PidStr), get_stmts).
 
 call(Pid, Msg) ->
     ?Debug("call ~p ~p", [Pid, Msg]),
@@ -138,6 +139,28 @@ handle_call({button, StmtRef, Button}, From, #state{idle_timer=Timer,stmts=Stmts
         end),
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {noreply,State#state{idle_timer=NewTimer}};
+handle_call({columns, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    case lists:keyfind(StmtRef, 1, Stmts) of
+        {_, #drvstmt{columns = Columns}} ->
+            ?Debug("~p columns ~p", [StmtRef, Columns]),
+            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+            {reply,Columns,State#state{idle_timer=NewTimer}};
+        false ->
+            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+            {reply,[],State#state{idle_timer=NewTimer}}
+    end;
+handle_call({row_with_key, StmtRef, RowId}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    ?Debug("~p in statements ~p", [StmtRef, Stmts]),
+    {_, #drvstmt{fsm=StmtFsm}} = lists:keyfind(StmtRef, 1, Stmts),     
+    StmtFsm:row_with_key(RowId,
+        fun(Row) ->
+            ?Debug("row_with_key ~p", [Row]),
+            gen_server:reply(From, Row)
+        end),
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {noreply,State#state{idle_timer=NewTimer}};
 
 handle_call(Msg, {From, _} = Frm, #state{connection=Connection
                                         ,idle_timer=Timer
@@ -191,7 +214,7 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                 % monitoring StmtFsmPid
                 erlang:monitor(process, StmtFsmPid),
                 NStmts = lists:keystore(StmtRef, 1, Stmts,
-                            {StmtRef, #drvstmt{ result   = {columns, Clms}
+                            {StmtRef, #drvstmt{ columns  = Clms
                                               , fsm      = StmtFsm
                                               , maxrows  = MaxRows}
                                               %, cmdstr   = Sql}
@@ -269,7 +292,7 @@ handle_info({'DOWN', Ref, process, StmtFsmPid, Reason}, #state{stmts=Stmts}=Stat
     [StmtRef|_] = [SR || {SR, DS} <- Stmts, DS#drvstmt.fsm =:= {erlimem_fsm, StmtFsmPid}],
     NewStmts = lists:keydelete(StmtRef, 1, Stmts),
     true = demonitor(Ref, [flush]),
-    ?Info("FSM ~p is died with reason ~p for stmt ~p remaining ~p", [StmtFsmPid, Reason, StmtRef, NewStmts]),
+    ?Info("FSM ~p is died with reason ~p for stmt ~p remaining ~p", [StmtFsmPid, Reason, StmtRef, [S || {S,_} <- NewStmts]]),
     {noreply, State#state{stmts=NewStmts}};
 
 %
