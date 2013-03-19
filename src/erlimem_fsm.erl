@@ -481,8 +481,8 @@ tailing({"button", <<">|">>, ReplyTo}, State0) ->
     State1 = reply_stack(tailing, ReplyTo, State0),
     State2 = serve_bot(tailing, <<"">>, State1),
     {next_state, tailing, State2#state{tailLock=true}};
-tailing({rows, {Recs,tail}}, State0) ->
-    State1 = data_append(tailing,{Recs,tail},State0),
+tailing({rows, {Recs,Complete}}, State0) ->
+    State1 = data_append(tailing,{Recs,Complete},State0),
     {next_state, tailing, State1#state{pfc=0}};
 tailing(Other, State) ->
     ?Info("tailing -- unexpected event ~p in state~n~p", [Other,State]),
