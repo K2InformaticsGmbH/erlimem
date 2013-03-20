@@ -47,7 +47,7 @@
 
 %% statement APIs
 -export([ get_columns/1
-        , gui_req/2
+        , gui_req/3
         , row_with_key/2
         ]).
 
@@ -59,7 +59,7 @@ exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr,
 exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
-gui_req(Button,              {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {button, StmtRef, Button}).
+gui_req(Cmd, Param,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {gui_req, StmtRef, Cmd, Param}).
 get_columns(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {columns, StmtRef}).
 
 get_stmts(PidStr) -> gen_server:call(list_to_pid(PidStr), get_stmts).
@@ -128,12 +128,12 @@ handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};
 handle_call(stop, _From, State) ->
     {stop,normal, ok, State};
-handle_call({button, StmtRef, Button}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+handle_call({gui_req, StmtRef, Cmd, Param}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     ?Debug("~p in statements ~p", [StmtRef, Stmts]),
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #drvstmt{fsm=StmtFsm}} ->
-            StmtFsm:gui_req("button", Button,
+            StmtFsm:gui_req(Cmd, Param,
                 fun(#gres{} = Gres) ->
                     ?Debug("resp for gui ~p", [Gres]),
                     gen_server:reply(From, Gres)
