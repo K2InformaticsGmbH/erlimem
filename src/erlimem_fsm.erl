@@ -5,8 +5,13 @@
 -include("gres.hrl").
 -include_lib("imem/include/imem_sql.hrl").
 
+-define(NoKey,{}).      %% placeholder for unavailable key tuple (recs)
 -define(KeyMax,[]).     %% value bigger than any possible sort key {SortFun(Recs),Id}
 -define(KeyMin,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
+-define(NoSort,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
+-define(NoFilter,{}).   %% empty filter spec
+
+-define(IndexRecord(__R,__SortFun),{{__SortFun(element(3,__R)),element(1,__R)},element(1,__R)}).
 
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
@@ -57,7 +62,7 @@
                 , rowFun              %% RowFun
                 , sortSpec            %% from imem statement, changed by gui events
                 , sortFun             %% from imem statement, follows sortSpec (calculated by imem statement)
-                , filterSpec = {}     %% {FType,[ColF|ColFs]}  changed by gui events FType= and|or  ColF = [{Col,["value1".."valuen"]}]
+                , filterSpec = ?NoFilter  %% {FType,[ColF|ColFs]}  changed by gui events FType= and|or  ColF = [{Col,["value1".."valuen"]}]
                 , filterFun           %% follows filterSpec
 
                 , rawCnt = 0          %% buffer row count
@@ -68,8 +73,8 @@
                 , dirtyBot = 0        %% record id of last dirty row in buffer
 
                 , indCnt = 0          %% count of indexed buffer entries (after filtering) 
-                , indTop = []         %% smallest index after filtering, initialized .. big value
-                , indBot = {}         %% biggest index after filtering, initialized .. small value
+                , indTop = ?KeyMax    %% smallest index after filtering, initialized to big value
+                , indBot = ?KeyMin    %% biggest index after filtering, initialized to small value
 
                 , bufCnt = 0          %% buffer row count           (either rawCnt or indCnt, depending on nav)
                 , bufTop              %% id of top buffer row       (either rawTop or indTop, depending on nav)
@@ -91,6 +96,7 @@
 
 -define(block_size,10).
 -define(MustCommit,<<"Please commit or rollback changes before clearing data">>).
+-define(UnknownCommand,<<"Unknown Command">>).
 
 
 %% --------------------------------------------------------------------
@@ -215,9 +221,7 @@ fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{sess_pid=DrvSessPid}}=State) ->
 init(#ctx{bl=BL,replyToFun=ReplyTo,stmtRef=StmtRef,rowFun=RowFun,sortFun=SortFun,sortSpec=SortSpec}=Ctx) ->
     TableId=ets:new(raw, [ordered_set]),        %% {Id,Op,Keys,Col1,Col2,...Coln}
     IndexId=ets:new(ind, [ordered_set]),        %% {{SortFun(Keys),Id},Id}
-    FilterSpec = (#state{})#state.filterSpec, 
-    {Nav,Srt} = navigation_type(SortFun,FilterSpec),
-    FilterFun = filter_fun(FilterSpec),
+    FilterSpec = ?NoFilter, 
     State0=#state{ bl           = BL
                  , gl           = gui_max(BL)
                  , ctx          = Ctx
@@ -227,20 +231,17 @@ init(#ctx{bl=BL,replyToFun=ReplyTo,stmtRef=StmtRef,rowFun=RowFun,sortFun=SortFun
                  , rowFun       = RowFun
                  , sortFun      = SortFun
                  , sortSpec     = SortSpec
-                 , filterFun    = FilterFun
-                 , filterSpec   = FilterSpec
-                 , nav          = Nav
-                 , srt          = Srt
                  , replyToFun   = ReplyTo
                  },
-    {ok, empty, set_buf_counters(State0)}.
+    State1 = data_index(SortFun,FilterSpec,State0),           
+    {ok, empty, set_buf_counters(State1)}.
 
 navigation_type(SortFun,FilterSpec) -> 
     case catch (SortFun(1)) of
-        {} ->
+        ?NoSort ->
             case FilterSpec of 
-                {} ->   {raw,false};
-                _ ->    {ind,false}
+                ?NoFilter ->    {raw,false};
+                _ ->            {ind,false}
             end;
         _ ->    
             {ind,true}
@@ -260,7 +261,7 @@ set_buf_counters(#state{nav=raw,rawCnt=RawCnt,rawTop=RawTop,rawBot=RawBot}=State
 set_buf_counters(#state{nav=ind,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}=State0) -> 
     State0#state{bufCnt=IndCnt,bufTop=IndTop,bufBot=IndBot}.
 
-filter_fun({}) ->
+filter_fun(?NoFilter) ->
     fun(_) -> true end;
 filter_fun({'and',Conditions}) ->
     fun(R) -> 
@@ -273,14 +274,14 @@ filter_fun({'or',Conditions}) ->
 
 filter_and(_,[]) -> true;
 filter_and(R,[{Col,Values}|Conditions]) ->
-    case lists:is_member(element(Col+3,R), Values) of
+    case lists:member(element(Col+3,R), Values) of
         true ->     filter_and(R,Conditions);
         false ->    false
     end.
 
 filter_or(_,[]) -> false;
 filter_or(R,[{Col,Values}|Conditions]) ->
-    case lists:is_member(element(Col+3,R), Values) of
+    case lists:member(element(Col+3,R), Values) of
         false ->    filter_or(R,Conditions);
         true ->     true
     end.
@@ -507,7 +508,7 @@ tailing({button, <<"tail">>, ReplyTo}, #state{tailLock=false}=State0) ->
     {next_state, tailing, State2};
 tailing({button, <<"tail">>, ReplyTo}, State0) ->
     % ignore loop command, stop tailing
-    ?Info("tailing stopped in state~n~p", [State0]),
+    ?Debug("tailing stopped~n", []),
     State1 = gui_nop(#gres{state=tailing},State0#state{replyToFun=ReplyTo}),
     {next_state, tailing, State1};
 tailing({button, <<">|">>, ReplyTo}, #state{bufCnt=0}=State0) ->
@@ -647,7 +648,10 @@ handle_event({"row_with_key", RowId, ReplyTo}, SN, #state{tableId=TableId}=State
     [Row] = ets:lookup(TableId, RowId),
     ?Debug("row_with_key ~p ~p", [RowId, Row]),
     ReplyTo(Row),
-    {next_state, SN, State#state{tailLock=true}}.
+    {next_state, SN, State#state{tailLock=true}};
+handle_event(Event, SN, State) ->
+    ?Info("handle_event -- unexpected event ~p in state ~p~n", [Event,SN]),
+    {next_state, SN, State}.
 
 
 %% --------------------------------------------------------------------
@@ -783,7 +787,7 @@ gui_replace_until(Bot,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
 gui_prepend(GuiResult,#state{nav=raw,bl=BL,gl=GL,guiCnt=GuiCnt,guiTop=GuiTop}=State0) ->
     Rows = rows_before(GuiTop, BL, State0),
     Cnt = length(Rows),
-    {NewGuiCnt,NewGuiTop,NewGuiBot} = case ids_after(GuiTop,min(GuiCnt,GL-Cnt-1),State0) of
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case ids_after(GuiTop,min(GuiCnt-1,GL-Cnt-1),State0) of
         [] ->       {Cnt+1,hd(hd(Rows)),GuiTop};
         IdsKept ->  {length(IdsKept)+Cnt+1,hd(hd(Rows)),lists:last(IdsKept)}
     end,
@@ -794,7 +798,7 @@ gui_prepend(GuiResult,#state{nav=ind,bl=BL,gl=GL,tableId=TableId,guiCnt=GuiCnt,g
     Keys=keys_before(GuiTop, BL, State0),
     Cnt = length(Keys),
     Rows = rows_for_keys(Keys,TableId),
-    {NewGuiCnt,NewGuiTop,NewGuiBot} = case keys_after(GuiTop,min(GuiCnt,GL-Cnt-1),State0) of
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case keys_after(GuiTop,min(GuiCnt-1,GL-Cnt-1),State0) of
         [] ->       {Cnt+1,hd(Keys),GuiTop};
         KeysKept -> {length(KeysKept)+Cnt+1,hd(Keys),lists:last(KeysKept)}
     end,
@@ -820,7 +824,7 @@ gui_append(GuiResult,#state{nav=raw,bl=BL,gl=GL,guiCnt=GuiCnt,guiBot=GuiBot}=Sta
     Rows=rows_after(GuiBot, BL, State0),
     % ?Info("Rows ~p", [Rows]),
     Cnt = length(Rows),
-    {NewGuiCnt,NewGuiTop,NewGuiBot} = case ids_before(GuiBot,min(GuiCnt,GL-Cnt-1),State0) of
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case ids_before(GuiBot,min(GuiCnt-1,GL-Cnt-1),State0) of
         [] ->       {Cnt+1,GuiBot,hd(lists:last(Rows))};
         IdsKept ->  {length(IdsKept)+Cnt+1,hd(IdsKept),hd(lists:last(Rows))}
     end,
@@ -828,7 +832,7 @@ gui_append(GuiResult,#state{nav=raw,bl=BL,gl=GL,guiCnt=GuiCnt,guiBot=GuiBot}=Sta
     State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
     gui_response(GuiResult#gres{operation= <<"app">>,rows=Rows,keep=NewGuiCnt}, State1);
 gui_append(GuiResult,#state{nav=ind,bl=BL,tableId=TableId,guiCnt=0}=State0) ->
-    Keys=keys_after({}, BL, State0),
+    Keys=keys_after(?KeyMin, BL, State0),
     case length(Keys) of
         0 ->    
              gui_response(GuiResult#gres{operation= <<"clr">>,keep=0}, State0);
@@ -845,7 +849,7 @@ gui_append(GuiResult,#state{nav=ind,bl=BL,gl=GL,tableId=TableId,guiCnt=GuiCnt,gu
     Keys=keys_after(GuiBot, BL, State0),
     Cnt = length(Keys),
     Rows = rows_for_keys(Keys,TableId),
-    {NewGuiCnt,NewGuiTop,NewGuiBot} = case keys_before(GuiBot,min(GuiCnt,GL-Cnt-1),State0) of
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case keys_before(GuiBot,min(GuiCnt-1,GL-Cnt-1),State0) of
         [] ->       {Cnt+1,GuiBot,lists:last(Keys)};
         KeysKept -> {length(KeysKept)+Cnt+1,hd(KeysKept),lists:last(Keys)}
     end,
@@ -861,11 +865,11 @@ serve_top(SN,#state{bl=BL,bufCnt=BufCnt,bufTop=BufTop}=State0) ->
             gui_clear(#gres{state=SN,beep=true},State1);
         (BufCnt >= BL+BL) ->
             %% enough data, serve it, no need for prefetch
-            gui_replace_from(BufTop,BL,#gres{state=SN},State0);
+            gui_replace_from(BufTop,BL,#gres{state=SN,focus=1},State0);
         true ->
-            %% we have data but may need .. prefetch
+            %% we have data but may need to prefetch
             State1 = prefetch(SN,State0),          %% only when filling
-            gui_replace_from(BufTop,BL,#gres{state=SN},State1)
+            gui_replace_from(BufTop,BL,#gres{state=SN,focus=1},State1)
     end.
 
 serve_fwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,replyToFun=ReplyTo}=State0) ->
@@ -876,7 +880,7 @@ serve_fwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
-            serve_top(SN,State0);
+            serve_bot(SN,<<"">>,State0);
         (GuiBot == BufBot) andalso (SN == completed) ->
             serve_bot(SN,<<"">>,State0);
         (GuiBot == BufBot) ->
@@ -901,7 +905,7 @@ serve_ffwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,gui
             gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
-            serve_top(SN,State0);
+            serve_bot(SN,<<"">>,State0);
         true ->
             NewGuiBot = key_times_2(GuiBot,State0),
             if 
@@ -967,7 +971,7 @@ serve_fbwd(SN,#state{bl=BL,srt=Srt,bufCnt=BufCnt,bufTop=BufTop,guiCnt=GuiCnt,gui
             gui_replace_from(NewGuiTop,BL,#gres{state=SN},State0)
     end.
 
-serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufCnt=BufCnt,guiCnt=GuiCnt,replyToFun=ReplyTo}=State0) when is_integer(Target) ->
+serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufCnt=BufCnt,bufTop=BufTop,guiCnt=GuiCnt,replyToFun=ReplyTo}=State0) when is_integer(Target) ->
     if
         (BufCnt == 0) ->
             %% no data, serve empty gui
@@ -977,22 +981,23 @@ serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufC
             %% (re)initialize buffer
             serve_top(SN,State0);
         (Target =< 0) andalso (BufCnt+Target > 0) ->
-            %% target given relative .. buffer bottom, retry with absolute target position 
+            %% target given relative to buffer bottom, retry with absolute target position 
             serve_target(SN,BufCnt+Target,State0);
         (Target =< 0)  ->
-            %% target points .. key smaller than top key
+            %% target points to key smaller than top key
             serve_top(SN,State0);
         (Target =< BufCnt) andalso (BufCnt =< BL) ->
-            %% target points .. first block in buffer
-            serve_top(SN,State0);
+            %% target points to first block in buffer
+            State1 = prefetch(SN,State0),          %% only when filling
+            gui_replace_from(BufTop,BL,#gres{state=SN,focus=Target},State1);
         (Nav == raw) andalso (Target =< BufCnt) ->
             %% target can be served
             Key = key_at_pos(TableId,Target),
-            gui_replace_until(Key,BL,#gres{state=SN},State0);
+            gui_replace_until(Key,BL,#gres{state=SN,focus=Target},State0);
         (Nav == ind) andalso (Target =< BufCnt) ->
             %% target can be served
             Key = key_at_pos(IndexId,Target),
-            gui_replace_until(Key,BL,#gres{state=SN},State0);
+            gui_replace_until(Key,BL,#gres{state=SN,focus=Target},State0);
         (Target > BufCnt) andalso (SN == completed) ->
             serve_bot(SN,<<"">>,State0);
         (Target > BufCnt) ->
@@ -1002,7 +1007,7 @@ serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufC
             State1#state{stack={button,Target,ReplyTo}};
         true ->
             %% target should be in GUI already
-            gui_nop(#gres{state=SN,message= <<"target row already in gui">>},State0)
+            gui_nop(#gres{state=SN},State0)
     end.
 
 serve_bot(SN, Loop, #state{nav=Nav,bl=BL,gl=GL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol}=State0) ->
@@ -1014,22 +1019,22 @@ serve_bot(SN, Loop, #state{nav=Nav,bl=BL,gl=GL,bufCnt=BufCnt,bufBot=BufBot,guiCn
             gui_clear(#gres{state=SN,loop=Loop},State1);
         (GuiCnt == 0) ->
             %% uninitialized view, must refresh    
-            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop},State0); 
+            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0); 
         (GuiCol == true) ->
             %% dirty index view, must refresh anyways    
-            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop},State0); 
+            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0); 
         (GuiBot == BufBot) ->
             %% gui is already there, noting .. do       
-            gui_nop(#gres{state=SN,loop=Loop},State0); 
+            gui_nop(#gres{state=SN,loop=Loop,focus=-1},State0); 
         (Nav == raw) andalso (GuiBot < BufBot-GL) ->
             %% uninitialized view, must refresh    
-            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop},State0); 
+            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0); 
         (Loop == <<"tail">>) andalso (SN == tailing) ->
             %% tailing should append (don't call this far from bottom of big buffer)                 
-            gui_append(#gres{state=SN,loop=Loop},State0#state{tailLock=false}); 
+            gui_append(#gres{state=SN,loop=Loop,focus=-1},State0#state{tailLock=false}); 
         true ->
             %% jump .. end and discard other cases (avoid scrolling big buffer)                 
-            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop},State0)
+            gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0)
     end.
 
 serve_stack( _, #state{stack=undefined}=State) -> 
@@ -1062,12 +1067,16 @@ serve_stack(SN, #state{stack={button,<<">>">>,RT},gl=GL,bufBot=BufBot,guiBot=Gui
         false ->    % deferred forward can be executed now
                     % ?Info("~p stack exec ~p", [SN,<<">>">>]),
                     serve_bot(SN,<<"">>,State0#state{tailLock=true,stack=undefined, replyToFun=RT});
-        true ->     State0#state{tailLock=true}  % buffer has not grown by 1 full gui length yet, keep the stack
+        true ->     State0#state{tailLock=true}  % buffer has not grown by 1 max gui length yet, keep the stack
     end;
 serve_stack(SN, #state{bufCnt=BufCnt,stack={button,Target,RT}}=State0) when is_integer(Target), (BufCnt>=Target) ->
     % deferred target can be executed now
     ?Info("~p stack exec ~p", [SN,Target]),
     serve_target(SN,Target,State0#state{tailLock=true,stack=undefined,replyToFun=RT});
+serve_stack(tailing, #state{stack={button,<<">|...">>,RT}}=State0) ->
+    serve_stack(tailing, State0#state{stack={button,<<"tail">>,RT}});
+serve_stack(tailing, #state{stack={button,<<"...">>,RT}}=State0) ->
+    serve_stack(tailing, State0#state{stack={button,<<"tail">>,RT}});
 serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={button,<<"tail">>,RT},tailLock=TailLock}=State0) ->
     ?Info("~p serve_stack ~p", [tailing,<<"tail">>]),
     if
@@ -1078,45 +1087,11 @@ serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
             serve_bot(tailing,<<"tail">>,State0#state{stack=undefined,replyToFun=RT});
         (GuiCol == false) ->
-            gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT});
+            gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>,focus=-1},State0#state{stack=undefined,replyToFun=RT});
         true ->
             % serve new data at the bottom of the buffer, ask client .. come back
             % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
-    end;
-serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={button,<<">|...">>,RT},tailLock=TailLock}=State0) ->
-    ?Info("~p serve_stack ~p", [tailing,<<">|...">>]),
-    if
-        TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
-        (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
-        (BufBot == GuiBot) andalso (GuiCol == false) -> State0;     % no new data, nothing .. do, keep stack
-        (GuiCnt == 0) ->                                            % (re)initialize .. buffer bottom
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            serve_bot(tailing,<<"tail">>,State0#state{stack=undefined,replyToFun=RT});
-        (GuiCol == false) ->
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT});
-        true ->
-            % serve new data at the bottom of the buffer, ask client .. come back
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
-    end;
-serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={button,<<"...">>,RT},tailLock=TailLock}=State0) ->
-    ?Info("~p serve_stack ~p", [tailing,<<"...">>]),
-    if
-        TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
-        (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
-        (BufBot == GuiBot) andalso (GuiCol == false) -> State0;     % no new data, nothing .. do, keep stack
-        (GuiCnt == 0) ->                                            % (re)initialize .. buffer bottom
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            serve_bot(tailing,<<"tail">>,State0#state{stack=undefined,replyToFun=RT});
-        (GuiCol == false) ->
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT});
-        true ->
-            % serve new data at the bottom of the buffer, ask client .. come back
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
-            gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
+            gui_append(#gres{state=tailing,loop= <<"tail">>,focus=-1},State0#state{stack=undefined,replyToFun=RT})
     end;
 serve_stack(SN , #state{stack=_Stack}=State) -> 
     ?Debug("~p serve_stack nop~p", [SN,<<"...">>]),
@@ -1283,7 +1258,7 @@ data_append(SN, {Recs,_Complete},#state{nav=ind,tableId=TableId,indexId=IndexId
     NewRawBot = RawBot+Cnt,
     RawRows = [raw_row_expand({I,nop,RK}, RowFun) || {I,RK} <- lists:zip(lists:seq(RawBot+1, NewRawBot), Recs)],
     ets:insert(TableId, RawRows),
-    IndRows = [{{SortFun(element(3,R)),element(1,R)},element(1,R)} || R <- lists:filter(FilterFun,RawRows)],
+    IndRows = [?IndexRecord(R,SortFun) || R <- lists:filter(FilterFun,RawRows)],
     % ?Info("data_append -IndRows- ~p", [IndRows]),
     FunCol = fun({X,_},{IT,IB,C}) ->  {IT,IB,(C orelse ((X>IT) and (X<IB)))}  end, 
     {_,_,Collision} = lists:foldl(FunCol, {GuiTop, GuiBot, false}, IndRows),    %% detect data collisions with gui content
@@ -1300,19 +1275,60 @@ data_append(SN, {Recs,_Complete},#state{nav=ind,tableId=TableId,indexId=IndexId
                                     )
                 ).
 
-data_filter(SN,_FilterSpec,State0) ->
-    %% TODO: transform FilterSpec and generate FilterFun
-    %%       store in State
-    %%       recalculate index table
-    %%       clear gui state and show buffer top page
-    gui_nop(#gres{state=SN},State0).  
+data_filter(SN,?NoFilter,#state{nav=raw}=State0) ->
+    %% No filter in place
+    gui_nop(#gres{state=SN,beep=true}, State0);
+data_filter(SN,?NoFilter,#state{nav=ind,srt=false}=State0) ->
+    %% No sort in place, clear index table and go to raw navigation
+    State1 = gui_clear(ind_clear(State0#state{nav=raw})),
+    serve_top(SN, State1);
+data_filter(SN,FilterSpec,#state{sortFun=SortFun}=State0) ->
+    ?Info("data_filter ~p~n", [FilterSpec]),
+    %% TODO: transform FilterSpec
+    State1 = data_index(SortFun,FilterSpec,State0),
+    serve_top(SN, State1).
 
-data_sort(SN,_SortSpec,State0) ->
+data_sort(SN,?NoSort,#state{srt=false}=State0) ->
+    %% No sort in place
+    gui_nop(#gres{state=SN,beep=true}, State0);
+data_sort(SN,?NoSort,#state{filterSpec=?NoFilter}=State0) ->
+    %% No filter in place, clear index table and go to raw navigation
+    State1 = gui_clear(ind_clear(State0#state{nav=raw,srt=false})),
+    serve_top(SN, State1);
+data_sort(SN,SortSpec,#state{sortFun=SortFun,filterSpec=FilterSpec}=State0) ->
+    ?Info("data_sort ~p~n", [SortSpec]),
     %% TODO: transform SortSpec and let DB generate SortFun
-    %%       store in State
-    %%       recalculate index table
-    %%       clear gui state and show buffer top page
-    gui_nop(#gres{state=SN},State0).  
+    State1 = data_index(SortFun,FilterSpec,State0),
+    serve_top(SN, State1).
+
+data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=RowFun}=State0) ->
+    FilterFun = filter_fun(FilterSpec),
+    {Nav,Srt} = navigation_type(SortFun,FilterSpec),
+    State1 = ind_clear(State0),
+    CompleteFun = fun
+        ({Id,Op,RK},Acc) -> 
+            ets:insert(TableId, raw_row_expand({Id,Op,RK}, RowFun)),
+            Acc+1;
+        (_,Acc) ->  
+            Acc
+    end, 
+    ets:foldl(CompleteFun, 0, TableId),
+    IndexFun = fun(R,Acc) -> 
+                case FilterFun(R) of 
+                    true ->
+                        ets:insert(IndexId, ?IndexRecord(R,SortFun)),
+                        Acc+1;
+                    false -> 
+                        Acc
+                end
+    end, 
+    IndCnt = ets:foldl(IndexFun, 0, TableId),
+    IndTop = ets:first(IndexId),
+    IndBot = ets:last(IndexId),
+    set_buf_counters(State1#state{nav=Nav,srt=Srt
+        ,sortFun=SortFun,filterSpec=FilterSpec,filterFun=FilterFun
+        ,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}).
+
 
 data_update(SN,ChangeList,State0) ->
     State1 = data_update_rows(ChangeList,State0),
@@ -1336,7 +1352,7 @@ data_update_rows([Ch|ChangeList], State0) ->
 
 data_update_row([undefined,Fields], #state{tableId=TableId,rawBot=RawBot,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
     Id = RawBot+1,          %% ToDo: map Fields .. complete rows ("" for undefined fields)
-    ets:insert(TableId, list_to_tuple([Id,ins,{}|Fields])),    
+    ets:insert(TableId, list_to_tuple([Id,ins,?NoKey|Fields])),    
     State0#state{dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1};
 data_update_row([Id,Op,Fields], #state{tableId=TableId}=State0) when is_integer(Id) ->
     OldRow = ets:lookup(TableId, Id),
