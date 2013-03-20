@@ -148,29 +148,32 @@ fsm_ctx(#stmtResult{ stmtRef  = StmtRef
 stop(Pid) -> 
 	gen_fsm:send_all_state_event(Pid,stop).
 
+gui_req("button", <<"restart">>, ReplyTo, {?MODULE,Pid}) -> 
+    ?Debug("button ~p", [<<"restart">>]),
+    gen_fsm:send_event(Pid,{"button", <<"restart">>, ReplyTo});
 gui_req("button", <<">|">>, ReplyTo, {?MODULE,Pid}) -> 
-    ?Info("button ~p", [<<">|">>]),
+    ?Debug("button ~p", [<<">|">>]),
     gen_fsm:send_event(Pid,{"button", <<">|">>, ReplyTo});
 gui_req("button", <<">|...">>, ReplyTo, {?MODULE,Pid}) -> 
-    ?Info("button ~p", [<<">|...">>]),
+    ?Debug("button ~p", [<<">|...">>]),
     gen_fsm:send_event(Pid,{"button", <<">|...">>, ReplyTo});
 gui_req("button", <<"...">>, ReplyTo, {?MODULE,Pid}) -> 
-    ?Info("button ~p", [<<"...">>]),
+    ?Debug("button ~p", [<<"...">>]),
     gen_fsm:send_event(Pid,{"button", <<"...">>, ReplyTo});
 gui_req("button", <<"tail">>, ReplyTo, {?MODULE,Pid}) -> 
-    % ?Info("button ~p", [<<"tail">>]),
+    ?Debug("button ~p", [<<"tail">>]),
     gen_fsm:send_event(Pid,{"button", <<"tail">>, ReplyTo});
 
 gui_req(CommandStr, Parameter, ReplyTo, {?MODULE,Pid}) when is_list(CommandStr) -> 
-    ?Info("~p ~p", [CommandStr,Parameter]),
+    ?Debug("~p ~p", [CommandStr,Parameter]),
     gen_fsm:send_all_state_event(Pid,{CommandStr, Parameter, ReplyTo}).
 
 row_with_key(RowId, ReplyTo, {?MODULE,Pid}) when is_integer(RowId) -> 
-    ?Info("row_with_key ~p", [RowId]),
+    ?Debug("row_with_key ~p", [RowId]),
     gen_fsm:send_all_state_event(Pid,{"row_with_key", RowId, ReplyTo}).
 
 rows({Rows,Completed},{?MODULE,Pid}) -> 
-    % ?Info("rows ~p ~p", [length(Rows),Completed]),
+    % ?Debug("rows ~p ~p", [length(Rows),Completed]),
     gen_fsm:send_event(Pid,{rows, {Rows,Completed}}).
 
 fetch(FetchMode,TailMode, #state{ctx = #ctx{sess_pid=DrvSessPid},stmtRef=StmtRef}=State) ->
@@ -180,7 +183,7 @@ fetch(FetchMode,TailMode, #state{ctx = #ctx{sess_pid=DrvSessPid},stmtRef=StmtRef
         {FM,TM} ->        [{fetch_mode,FM},{tail_mode,TM}]
     end,
     case gen_server:call(DrvSessPid, [fetch_recs_async, Opts, StmtRef]) of
-        ok -> ?Info("fetch (~p, ~p) ok", [FetchMode, TailMode]);
+        ok -> ?Debug("fetch (~p, ~p) ok", [FetchMode, TailMode]);
         {error, Error} -> ?Error("fetch exception ~p", [Error])
     end,
     NewPfc=State#state.pfc+1,
@@ -192,7 +195,7 @@ prefetch(_,State) ->                      State.
 
 fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{sess_pid=DrvSessPid}}=State) ->
     Result = gen_server:call(DrvSessPid, [fetch_close, StmtRef]),
-    ?Info("fetch_close -- ~p", [Result]),
+    ?Debug("fetch_close -- ~p", [Result]),
     State#state{pfc=0}.
 
 
@@ -315,10 +318,21 @@ empty(Other, State) ->
     ?Info("empty -- unexpected erlimem_fsm event ~p in empty state", [Other]),
     {next_state, empty, State}.
 
+filling({"button", <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
+    State1 = reply_stack(filling, ReplyTo, State0),
+    State2 = fetch_close(State1),
+    State3 = data_clear(State2),
+    State4 = fetch(none,none,State3),
+    State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
+    {next_state, filling, State5};
+filling({"button", <<"restart">>, ReplyTo}, State0) ->
+    % reject command because of uncommitted changes
+    State1 = gui_nop(#gres{state=filling,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
+    {next_state, filling, State1};
 filling({"button", Button, ReplyTo}=Cmd, #state{bufCnt=0}=State0) ->
     % too quick, defer request .. when we have the first block of data 
     State1 = reply_stack(filling, ReplyTo, State0),
-    ?Info("filling stack ~p", [Button]),
+    ?Debug("filling stack ~p", [Button]),
     {next_state, filling, State1#state{stack=Cmd}};
 filling({"button", <<"...">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
     % close fetch and clear buffers, schedule tail mode
@@ -337,19 +351,19 @@ filling({"button", <<">|...">>, ReplyTo}=Cmd, State0) ->
     State1 = reply_stack(filling, ReplyTo, State0),
     State2 = fetch(push,true,State1),
     State3 = gui_clear(State2),
-    ?Info("filling stack '>|...'"),
+    ?Debug("filling stack '>|...'"),
     {next_state, autofilling, State3#state{tailMode=true,tailLock=false,stack=Cmd}};
 filling({"button", <<">|">>, ReplyTo}=Cmd, State0) ->
     % switch fetch .. push mode, defer answer .. bulk fetch completed 
     State1 = reply_stack(filling, ReplyTo, State0),
     State2 = fetch(push,none,State1),
-    ?Info("filling stack '>|'"),
+    ?Debug("filling stack '>|'"),
     {next_state, autofilling, State2#state{stack=Cmd}};
 filling({rows, {Recs,false}}, #state{nav=Nav,bl=BL,stack={"button",Target,_}}=State0) when is_integer(Target) ->
     % receive and store data, prefetch if a 'target sprint' is ongoing
     State1 = data_append(filling, {Recs,false},State0),
-    % ?Info("Target ~p", [Target]),
-    % ?Info("BufCnt ~p", [State1#state.bufCnt]),
+    % ?Debug("Target ~p", [Target]),
+    % ?Debug("BufCnt ~p", [State1#state.bufCnt]),
     State2 = if  
         (Nav == ind) andalso (Target > State1#state.bufCnt) ->  
             prefetch(filling,State1);
@@ -393,6 +407,17 @@ filling(Other, State) ->
     {next_state, filling, State}.
 
 
+autofilling({"button", <<"restart">>, ReplyTo}, #state{dirtyCnt=DC,tailMode=TailMode}=State0) when DC==0 ->
+    State1 = reply_stack(autofilling, ReplyTo, State0),
+    State2 = fetch_close(State1),
+    State3 = data_clear(State2),
+    State4 = fetch(push,TailMode,State3),
+    State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
+    {next_state, filling, State5};
+autofilling({"button", <<"restart">>, ReplyTo}, State0) ->
+    % reject command because of uncommitted changes
+    State1 = gui_nop(#gres{state=autofilling,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
+    {next_state, filling, State1};
 autofilling({"button", <<"...">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0->
     % stop fetch, clear buffer and start tailing
     State1 = reply_stack(tailing, ReplyTo, State0),
@@ -415,7 +440,7 @@ autofilling({"button", <<">|...">>, ReplyTo}=Cmd, #state{tailMode=TailMode}=Stat
             % tailing will happen anyways at the end of the bulk fetch, keep command on stack
             State1 = reply_stack(autofilling, ReplyTo, State0),
             State2 = gui_clear(State1),
-            ?Info("autofilling stack '>|...'"),
+            ?Debug("autofilling stack '>|...'"),
             {next_state, autofilling, State2#state{tailLock=false,stack=Cmd}}
     end;
 autofilling({"button", <<">|">>, ReplyTo}=Cmd, #state{tailMode=TailMode}=State0) ->
@@ -427,7 +452,7 @@ autofilling({"button", <<">|">>, ReplyTo}=Cmd, #state{tailMode=TailMode}=State0)
         true ->
             % already waiting for end of fetch, keep command on stack
             State1 = reply_stack(autofilling, ReplyTo, State0),
-            ?Info("autofilling stack '>|'"),
+            ?Debug("autofilling stack '>|'"),
             {next_state, autofilling, State1#state{tailLock=true,stack=Cmd}}
     end;
 autofilling({rows, {Recs,false}}, State0) ->
@@ -447,6 +472,17 @@ autofilling(Other, State) ->
     ?Info("autofilling -- unexpected event ~p", [Other]),
     {next_state, autofilling, State}.
 
+tailing({"button", <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
+    State1 = reply_stack(tailing, ReplyTo, State0),
+    State2 = fetch_close(State1),
+    State3 = data_clear(State2),
+    State4 = fetch(none,true,State3),
+    State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
+    {next_state, filling, State5};
+tailing({"button", <<"restart">>, ReplyTo}, State0) ->
+    % reject command because of uncommitted changes
+    State1 = gui_nop(#gres{state=tailing,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
+    {next_state, filling, State1};
 tailing({"button", <<"...">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0->
     % clear buffer and resume tailing
     State1 = reply_stack(tailing, ReplyTo, State0),
@@ -464,6 +500,7 @@ tailing({"button", <<">|...">>, ReplyTo}, State0) ->
     {next_state, tailing, State2#state{tailLock=false}};
 tailing({"button", <<"tail">>, ReplyTo}, #state{tailLock=false}=State0) ->
     % continue tailing
+    % ?Debug("tailing button in state ~n~p", [tailing]),
     State1 = reply_stack(tailing, ReplyTo, State0),
     State2 = serve_bot(tailing, <<"tail">>, State1),
     {next_state, tailing, State2};
@@ -488,6 +525,17 @@ tailing(Other, State) ->
     ?Info("tailing -- unexpected event ~p in state~n~p", [Other,State]),
     {next_state, tailing, State}.
 
+completed({"button", <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
+    State1 = reply_stack(completed, ReplyTo, State0),
+    State2 = fetch_close(State1),
+    State3 = data_clear(State2),
+    State4 = fetch(none,false,State3),
+    State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
+    {next_state, filling, State5};
+completed({"button", <<"restart">>, ReplyTo}, State0) ->
+    % reject command because of uncommitted changes
+    State1 = gui_nop(#gres{state=completed,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
+    {next_state, completed, State1};
 completed({"button", <<"...">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
     % clear buffers, close and reopen fetch with skip and tail options
     State1 = reply_stack(completed, ReplyTo, State0),
@@ -668,7 +716,7 @@ gui_response(Gres, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,replyToFun=ReplyTo
     State.
 
 gui_close(GuiResult,State) -> 
-    ?Info("gui_close () ~p", [GuiResult#gres.state]),
+    ?Debug("gui_close () ~p", [GuiResult#gres.state]),
     gui_response(GuiResult#gres{operation= <<"close">>},State).
 
 gui_nop(GuiResult,State) -> 
@@ -681,7 +729,7 @@ gui_clear(GuiResult,State0) ->
     gui_response(GuiResult#gres{operation= <<"clr">>,keep=0}, State1).
 
 gui_replace(NewTop,NewBot,GuiResult,State0) ->
-    ?Info("gui_replace ~p .. ~p ~p ~p", [NewTop, NewBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    ?Debug("gui_replace ~p .. ~p ~p ~p", [NewTop, NewBot, GuiResult#gres.state, GuiResult#gres.loop]),
     Rows=all_rows(NewTop,NewBot,State0),
     Cnt=length(Rows),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewTop,guiBot=NewBot,guiCol=false},
@@ -696,7 +744,7 @@ gui_replace_from(Top,Limit,GuiResult,#state{nav=raw,tableId=TableId,rowFun=RowFu
     Rows = rows_for_ids(Ids,TableId,RowFun),
     NewGuiTop = hd(Ids),
     NewGuiBot = lists:last(Ids),
-    ?Info("gui_replace_from  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    ?Debug("gui_replace_from  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1);
 gui_replace_from(Top,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
@@ -705,7 +753,7 @@ gui_replace_from(Top,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
     Rows = rows_for_keys(Keys,TableId),
     NewGuiTop = Top,
     NewGuiBot = lists:last(Keys),
-    ?Info("gui_replace_from  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    ?Debug("gui_replace_from  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt}, State1).
 
@@ -718,7 +766,7 @@ gui_replace_until(Bot,Limit,GuiResult,#state{nav=raw,tableId=TableId,rowFun=RowF
     Rows = rows_for_ids(Ids,TableId,RowFun),
     NewGuiTop = hd(Ids),
     NewGuiBot = lists:last(Ids),
-    ?Info("gui_replace_until  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    ?Debug("gui_replace_until  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt}, State1);
 gui_replace_until(Bot,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
@@ -727,29 +775,29 @@ gui_replace_until(Bot,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
     Rows = rows_for_keys(Keys,TableId),
     NewGuiTop = hd(Keys),
     NewGuiBot = Bot,
-    ?Info("gui_replace_until  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    ?Debug("gui_replace_until  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1).
 
 gui_prepend(GuiResult,#state{nav=raw,bl=BL,gl=GL,guiCnt=GuiCnt,guiTop=GuiTop}=State0) ->
     Rows = rows_before(GuiTop, BL, State0),
     Cnt = length(Rows),
-    IdsKept = ids_after(GuiTop,min(GuiCnt,GL-Cnt-1),State0),
-    NewGuiCnt = length(IdsKept)+1+Cnt,
-    NewGuiTop = hd(hd(Rows)),
-    NewGuiBot = lists:last(IdsKept),
-    ?Info("gui_prepend ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case ids_after(GuiTop,min(GuiCnt,GL-Cnt-1),State0) of
+        [] ->       {Cnt+1,hd(hd(Rows)),GuiTop};
+        IdsKept ->  {length(IdsKept)+Cnt+1,hd(hd(Rows)),lists:last(IdsKept)}
+    end,
+    ?Debug("gui_prepend ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
     gui_response(GuiResult#gres{operation= <<"prp">>,rows=Rows,keep=NewGuiCnt},State1);
 gui_prepend(GuiResult,#state{nav=ind,bl=BL,gl=GL,tableId=TableId,guiCnt=GuiCnt,guiTop=GuiTop}=State0) ->
     Keys=keys_before(GuiTop, BL, State0),
     Cnt = length(Keys),
     Rows = rows_for_keys(Keys,TableId),
-    KeysKept = keys_after(GuiTop,min(GuiCnt,GL-Cnt-1),State0),
-    NewGuiCnt = length(KeysKept)+1+Cnt,
-    NewGuiTop = hd(Keys),
-    NewGuiBot = lists:last(KeysKept),
-    ?Info("gui_prepend ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case keys_after(GuiTop,min(GuiCnt,GL-Cnt-1),State0) of
+        [] ->       {Cnt+1,hd(Keys),GuiTop};
+        KeysKept -> {length(KeysKept)+Cnt+1,hd(Keys),lists:last(KeysKept)}
+    end,
+    ?Debug("gui_prepend ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
     gui_response(GuiResult#gres{operation= <<"prp">>,rows=Rows,keep=NewGuiCnt}, State1).
 
@@ -762,7 +810,7 @@ gui_append(GuiResult,#state{nav=raw,bl=BL,guiCnt=0}=State0) ->
             NewGuiCnt = Cnt,
             NewGuiTop = hd(hd(Rows)),
             NewGuiBot = hd(lists:last(Rows)),
-            ?Info("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+            ?Debug("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
             State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
             gui_response(GuiResult#gres{operation= <<"app">>,rows=Rows,keep=NewGuiCnt}, State1)
     end;
@@ -771,11 +819,11 @@ gui_append(GuiResult,#state{nav=raw,bl=BL,gl=GL,guiCnt=GuiCnt,guiBot=GuiBot}=Sta
     Rows=rows_after(GuiBot, BL, State0),
     % ?Info("Rows ~p", [Rows]),
     Cnt = length(Rows),
-    IdsKept = ids_before(GuiBot,min(GuiCnt,GL-Cnt-1),State0),
-    NewGuiCnt = length(IdsKept)+1+Cnt,
-    NewGuiTop = hd(IdsKept),
-    NewGuiBot = hd(lists:last(Rows)),
-    ?Info("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case ids_before(GuiBot,min(GuiCnt,GL-Cnt-1),State0) of
+        [] ->       {Cnt+1,GuiBot,hd(lists:last(Rows))};
+        IdsKept ->  {length(IdsKept)+Cnt+1,hd(IdsKept),hd(lists:last(Rows))}
+    end,
+    ?Debug("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
     gui_response(GuiResult#gres{operation= <<"app">>,rows=Rows,keep=NewGuiCnt}, State1);
 gui_append(GuiResult,#state{nav=ind,bl=BL,tableId=TableId,guiCnt=0}=State0) ->
@@ -788,7 +836,7 @@ gui_append(GuiResult,#state{nav=ind,bl=BL,tableId=TableId,guiCnt=0}=State0) ->
             NewGuiCnt = Cnt,
             NewGuiTop = hd(Keys),
             NewGuiBot = lists:last(Keys),
-            ?Info("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+            ?Debug("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
             State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
             gui_response(GuiResult#gres{operation= <<"app">>,rows=Rows,keep=NewGuiCnt}, State1)
     end;
@@ -796,27 +844,20 @@ gui_append(GuiResult,#state{nav=ind,bl=BL,gl=GL,tableId=TableId,guiCnt=GuiCnt,gu
     Keys=keys_after(GuiBot, BL, State0),
     Cnt = length(Keys),
     Rows = rows_for_keys(Keys,TableId),
-    KeysKept = keys_before(GuiBot,min(GuiCnt,GL-Cnt-1),State0),
-    NewGuiCnt = length(KeysKept)+1+Cnt,
-    NewGuiTop = hd(KeysKept),
-    NewGuiBot = lists:last(Keys),
-    ?Info("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
+    {NewGuiCnt,NewGuiTop,NewGuiBot} = case keys_before(GuiBot,min(GuiCnt,GL-Cnt-1),State0) of
+        [] ->       {Cnt+1,GuiBot,lists:last(Keys)};
+        KeysKept -> {length(KeysKept)+Cnt+1,hd(KeysKept),lists:last(Keys)}
+    end,
+    ?Debug("gui_append  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
     gui_response(GuiResult#gres{operation= <<"app">>,rows=Rows,keep=NewGuiCnt}, State1).
-
-
-serve_empty(SN,true,State0) ->
-    State1 = prefetch(SN,State0),          %% only when filling
-    gui_nop(#gres{state=SN,beep=true},State1);
-serve_empty(SN,false,State0) ->
-    State1 = prefetch(SN,State0),          %% only when filling
-    gui_nop(#gres{state=SN},State1).
 
 serve_top(SN,#state{bl=BL,bufCnt=BufCnt,bufTop=BufTop}=State0) ->
     if
         (BufCnt == 0) ->
             %% no data, serve empty page
-            serve_empty(SN,false,State0);
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,beep=true},State1);
         (BufCnt >= BL+BL) ->
             %% enough data, serve it, no need for prefetch
             gui_replace_from(BufTop,BL,#gres{state=SN},State0);
@@ -830,7 +871,8 @@ serve_fwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
     if
         (BufCnt == 0) ->
             %% no data, serve empty gui
-            serve_empty(SN,false,State0);
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
             serve_top(SN,State0);
@@ -839,7 +881,7 @@ serve_fwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
         (GuiBot == BufBot) ->
             %% index view is at end of buffer, prefetch and defer answer
             State1 = prefetch(SN,State0),
-            ?Info("~p stack ~p", [SN,<<">">>]),
+            ?Debug("~p stack ~p", [SN,<<">">>]),
             State1#state{stack={"button",<<">">>,ReplyTo}};
         (Nav == raw) andalso (GuiBot > BufBot-BL-BL) ->
             %% prefetch and go forward
@@ -854,7 +896,8 @@ serve_ffwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,gui
     if
         (BufCnt == 0) ->
             %% no data, serve empty gui
-            serve_empty(SN,false,State0);
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
             serve_top(SN,State0);
@@ -864,7 +907,7 @@ serve_ffwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,gui
                 (Nav == ind) andalso (NewGuiBot == undefined) -> 
                     %% jump leads outside of index table, target double buffer size
                     State1 = prefetch(SN,State0),
-                    ?Info("~p stack ~p", [SN,<<">>">>]),
+                    ?Debug("~p stack ~p", [SN,<<">>">>]),
                     State1#state{stack={"button",<<">>">>,ReplyTo}};  %%  BufCnt+BufCnt for target based jump
                 (NewGuiBot =< BufBot) ->
                     %% requested jump is possible within existing buffer, do it
@@ -872,7 +915,7 @@ serve_ffwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,gui
                 (Nav == raw) andalso (SN == filling) ->
                     %% jump is not possible in existing buffer, target 
                     State1 = prefetch(SN,State0),
-                    ?Info("~p stack ~p", [SN,NewGuiBot]),
+                    ?Debug("~p stack ~p", [SN,NewGuiBot]),
                     State1#state{stack={"button",NewGuiBot,ReplyTo}};
                 true ->
                     %% jump is not possible in existing buffer, show end of it 
@@ -884,14 +927,15 @@ serve_bwd(SN,#state{srt=Srt,bufCnt=BufCnt,bufTop=BufTop,guiCnt=GuiCnt,guiTop=Gui
     if
         (BufCnt == 0) ->
             %% no data, serve empty gui
-            serve_empty(SN,true,State0);
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
             serve_top(SN,State0);
         (GuiTop == BufTop) andalso Srt and (SN == filling) ->
             %% we are at the top of the buffer, must fetch .. go backward, stack command
             State1 = prefetch(SN,State0),       
-            ?Info("~p stack ~p", [SN,<<"<">>]),
+            ?Debug("~p stack ~p", [SN,<<"<">>]),
             State1#state{stack={"button",<<"<">>,ReplyTo}};
         (GuiTop == BufTop)  ->
             %% we are at the top of the buffer, cannot go backward
@@ -904,14 +948,15 @@ serve_fbwd(SN,#state{bl=BL,srt=Srt,bufCnt=BufCnt,bufTop=BufTop,guiCnt=GuiCnt,gui
     if
         (BufCnt == 0) ->
             %% no data, serve empty gui
-            serve_empty(SN,true,State0);
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
             serve_top(SN,State0);
         (GuiTop == BufTop) andalso Srt and (SN == filling) ->
             %% we are at the top of the buffer, must fetch .. go backward, stack command
             State1 = prefetch(SN,State0),       
-            ?Info("~p stack ~p", [SN,<<"<<">>]),
+            ?Debug("~p stack ~p", [SN,<<"<<">>]),
             State1#state{stack={"button",<<"<<">>,ReplyTo}};
         (GuiTop == BufTop)  ->
             %% we are at the top of the buffer, cannot go backward
@@ -925,7 +970,8 @@ serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufC
     if
         (BufCnt == 0) ->
             %% no data, serve empty gui
-            serve_empty(SN,true,State0);
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,beep=true},State1);
         (GuiCnt == 0) ->
             %% (re)initialize buffer
             serve_top(SN,State0);
@@ -951,7 +997,7 @@ serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufC
         (Target > BufCnt) ->
             %% jump is not possible in existing buffer, defer answer
             State1 = prefetch(SN,State0),
-            ?Info("~p stack ~p", [SN,Target]),
+            ?Debug("~p stack ~p", [SN,Target]),
             State1#state{stack={"button",Target,ReplyTo}};
         true ->
             %% target should be in GUI already
@@ -959,11 +1005,12 @@ serve_target(SN,Target,#state{nav=Nav,bl=BL,tableId=TableId,indexId=IndexId,bufC
     end.
 
 serve_bot(SN, Loop, #state{nav=Nav,bl=BL,gl=GL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol}=State0) ->
-    % ?Info("serve_bot  (~p ~p) ~p ~p", [SN, Loop, GuiBot, BufBot]),
+    %% ?Info("serve_bot  (~p ~p) ~p ~p ~p ~p", [SN, Loop, BufCnt, BufBot, GuiCnt, GuiBot]),
     if
         (BufCnt == 0) ->
             %% no data, serve empty
-            serve_empty(SN,false,State0);         
+            State1 = prefetch(SN,State0),
+            gui_clear(#gres{state=SN,loop=Loop},State1);
         (GuiCnt == 0) ->
             %% uninitialized view, must refresh    
             gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop},State0); 
@@ -1021,6 +1068,7 @@ serve_stack(SN, #state{bufCnt=BufCnt,stack={"button",Target,RT}}=State0) when is
     ?Info("~p stack exec ~p", [SN,Target]),
     serve_target(SN,Target,State0#state{tailLock=true,stack=undefined,replyToFun=RT});
 serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={"button",<<"tail">>,RT},tailLock=TailLock}=State0) ->
+    ?Info("~p serve_stack ~p", [tailing,<<"tail">>]),
     if
         TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
         (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
@@ -1029,7 +1077,6 @@ serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
             serve_bot(tailing,<<"tail">>,State0#state{stack=undefined,replyToFun=RT});
         (GuiCol == false) ->
-            % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
             gui_replace_from(GuiBot,BL,#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT});
         true ->
             % serve new data at the bottom of the buffer, ask client .. come back
@@ -1037,6 +1084,7 @@ serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
     end;
 serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={"button",<<">|...">>,RT},tailLock=TailLock}=State0) ->
+    ?Info("~p serve_stack ~p", [tailing,<<">|...">>]),
     if
         TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
         (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
@@ -1053,6 +1101,7 @@ serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
     end;
 serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiBot=GuiBot,guiCol=GuiCol,stack={"button",<<"...">>,RT},tailLock=TailLock}=State0) ->
+    ?Info("~p serve_stack ~p", [tailing,<<"...">>]),
     if
         TailLock -> State0#state{stack=undefined};                  % tailing is cancelled
         (BufCnt == 0) -> State0;                                    % no data, nothing .. do, keep stack
@@ -1068,7 +1117,9 @@ serve_stack(tailing, #state{bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             % ?Info("~p stack exec ~p", [tailing,<<"tail">>]),
             gui_append(#gres{state=tailing,loop= <<"tail">>},State0#state{stack=undefined,replyToFun=RT})
     end;
-serve_stack(_ , State) -> State.
+serve_stack(SN , #state{stack=Stack}=State) -> 
+    ?Info("~p serve_stack nop~p", [SN,<<"...">>]),
+    State.
 
 
 all_rows(Top, Bot, _) when Top > Bot -> [];
