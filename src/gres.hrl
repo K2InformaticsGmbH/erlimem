@@ -8,4 +8,5 @@
                 , loop = <<"">>       %% gui should come back with this command -- empty string is 'undefined'
                 , rows = []           %% rows .. show (append / prepend / merge)
                 , keep = 0            %% row count .. be kept
+                , focus = -1          %% the row to scroll into view (default -1, do not scroll)
                 }).
