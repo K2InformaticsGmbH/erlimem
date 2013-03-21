@@ -768,6 +768,12 @@ gui_replace(NewTop,NewBot,GuiResult,State0) ->
     State1 = State0#state{guiCnt=Cnt,guiTop=NewTop,guiBot=NewBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1).
 
+gui_ins(#gres{rows=Rows}=GuiResult, #state{guiCnt=GuiCnt}=State0) ->
+    Cnt = length(Rows),
+    ?Debug("gui_ins (~p) ~p ~p", [Cnt, GuiResult#gres.state, GuiResult#gres.loop]),
+    gui_response(GuiResult#gres{operation= <<"ins">>},State0#state{guiCnt=GuiCnt+Cnt}).
+
+
 gui_replace_from(Top,Limit,GuiResult,#state{nav=raw,tableId=TableId,rowFun=RowFun}=State0) ->
     Ids = case ets:lookup(TableId, Top) of
         [] ->   ids_after(Top, Limit, State0);
@@ -1323,7 +1329,7 @@ data_sort(SN,?NoSort,#state{filterSpec=?NoFilter}=State0) ->
     State1 = gui_clear(ind_clear(State0#state{nav=raw,srt=false})),
     serve_top(SN, State1);
 data_sort(SN,SortSpec,#state{filterSpec=FilterSpec}=State0) ->
-    ?Info("data_sort ~w ~w", [SortSpec,FilterSpec]),
+    ?Info("data_sort ~p ~p", [SortSpec,FilterSpec]),
     case filter_and_sort(FilterSpec, SortSpec, State0) of
         {ok, NewSql, NewSortFun} ->
             ?Info("data_sort ~p ~p", [NewSql,NewSortFun]),
@@ -1363,10 +1369,65 @@ data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=Row
         ,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}).
 
 
-data_update(SN,ChangeList,State0) ->
-    State1 = data_update_rows(ChangeList,State0),
-    %% TODO: return list of Ids chosen by fsm for inserts
-    gui_nop(#gres{state=SN},State1).  
+data_update(SN,ChangeList,#state{stmtCols=StmtCols}=State0) ->
+    {State1,InsRows} = data_update_rows(ChangeList,length(StmtCols),State0,[]),
+    gui_ins(#gres{state=SN,rows=InsRows}, State1).
+
+data_update_rows([], _, State, Acc) -> {State, lists:reverse(Acc)};
+data_update_rows([Ch|ChangeList], ColCount, State0, Acc) ->
+    case data_update_row(Ch, ColCount, State0) of
+        {[], S1} ->     data_update_rows(ChangeList, ColCount, S1, Acc);         %% upd / del
+        {[Row],S2} ->   data_update_rows(ChangeList, ColCount, S2, [Row|Acc])    %% ins
+    end.
+
+data_update_row({Id,Op,Fields}, _ColCount, #state{tableId=TableId}=State0) when is_integer(Id) ->
+    [OldRow] = ets:lookup(TableId, Id),
+    ?Info("OldRow/Ch ~p ~p", [OldRow,{Id,Op,Fields}]),
+    {O,NewTuple,State1} = case {element(2,OldRow),Op} of
+        {nop,upd} ->    DT =  min(State0#state.dirtyTop,Id),
+                        DB =  max(State0#state.dirtyBot,Id),
+                        DC =  State0#state.dirtyCnt+1,
+                        {Op,  upd_tuple(Fields,OldRow), State0#state{dirtyTop=DT,dirtyBot=DB,dirtyCnt=DC}};
+        {nop,del} ->    DT =  min(State0#state.dirtyTop,Id),
+                        DB =  max(State0#state.dirtyBot,Id),
+                        DC =  State0#state.dirtyCnt+1,
+                        {Op,  upd_tuple(Fields,OldRow), State0#state{dirtyTop=DT,dirtyBot=DB,dirtyCnt=DC}};
+        {del,del} ->    {del, upd_tuple(Fields,OldRow), State0};
+        {del,upd} ->    {upd, upd_tuple(Fields,OldRow), State0};
+        {ins,upd} ->    {ins, upd_tuple(Fields,OldRow), State0};
+        {ins,del} ->    DC =  State0#state.dirtyCnt-1,
+                        {nop, undefined, State0#state{dirtyCnt=DC}};
+        {upd,upd} ->    {upd, upd_tuple(Fields,OldRow), State0};        
+        {upd,del} ->    {del, upd_tuple(Fields,OldRow), State0}        
+    end,
+    case {element(2,OldRow),Op} of 
+        {ins,del} ->    ets:delete(TableId, Id);
+        _ ->            ets:insert(TableId, list_to_tuple([Id,O|tuple_to_list(NewTuple)]))
+    end,
+    RawCnt=ets:info(TableId,size),
+    RawBot=ets:last(TableId),
+    {[],State1#state{rawCnt=RawCnt,rawBot=RawBot}};
+data_update_row([_,ins|Fields], ColCount, #state{nav=raw,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
+    Id = RawBot+1,          
+    RowAsList = [Id,ins,?NoKey|tuple_to_list(ins_tuple(Fields,ColCount))],
+    ets:insert(TableId, list_to_tuple(RowAsList)),    
+    {[RowAsList],State0#state{rawCnt=RawCnt+1,rawBot=Id,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}};
+data_update_row([_,ins|Fields], ColCount, #state{nav=ind,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,indCnt=IndCnt,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
+    Id = RawBot+1,          
+    RowAsList = [Id,ins,?NoKey|tuple_to_list(ins_tuple(Fields,ColCount))],
+    ets:insert(TableId, list_to_tuple(RowAsList)),    
+    {[RowAsList],State0#state{rawCnt=RawCnt+1,rawBot=Id,indCnt=IndCnt+1,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}}.
+
+ins_tuple(Fields,ColCount) ->
+    ins_tuple(Fields,ColCount,erlang:make_tuple(ColCount,[])).
+
+ins_tuple([],_,Tuple) -> Tuple;
+ins_tuple([{Cp,Value}|Fields],ColCount,Tuple) ->
+    ins_tuple(Fields,ColCount,setelement(Cp, Tuple, Value)).
+
+upd_tuple([],Tuple) -> Tuple;
+upd_tuple([{Cp,Value}|Fields],Tuple) ->
+    upd_tuple(Fields,setelement(Cp+3, Tuple, Value)).
 
 data_commit(SN, #state{guiTop=GuiTop,guiBot=GuiBot}=State) -> 
     %% ToDo: recalculate dirty rows using KeyUpdate
@@ -1378,33 +1439,3 @@ data_rollback(SN, #state{guiTop=GuiTop,guiBot=GuiBot}=State) ->
     %%       serve errors if present (no matter the size)
     gui_replace(GuiTop, GuiBot, #gres{state=SN},State).  
 
-data_update_rows([], State) -> State;
-data_update_rows([Ch|ChangeList], State0) ->
-    State1 = data_update_row(Ch, State0),
-    data_update_rows(ChangeList, State1).
-
-data_update_row([undefined,Fields], #state{tableId=TableId,rawBot=RawBot,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
-    Id = RawBot+1,          %% ToDo: map Fields .. complete rows ("" for undefined fields)
-    ets:insert(TableId, list_to_tuple([Id,ins,?NoKey|Fields])),    
-    State0#state{dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1};
-data_update_row([Id,Op,Fields], #state{tableId=TableId}=State0) when is_integer(Id) ->
-    OldRow = ets:lookup(TableId, Id),
-    {O,State1} = case {element(2,OldRow),Op} of
-        {nop,nop} ->    {nop,State0};
-        {nop,_} ->      DT = min(State0#state.dirtyTop,Id),
-                        DB = max(State0#state.dirtyBot,Id),
-                        DC = State0#state.dirtyCnt+1,
-                        {Op, State0#state{dirtyTop=DT,dirtyBot=DB,dirtyCnt=DC}};
-        {_,nop} ->      DC = State0#state.dirtyCnt-1,
-                        {nop,State0#state{dirtyCnt=DC}};
-        {ins,upd} ->    {ins,State0};
-        {ins,ins} ->    {ins,State0};
-        {ins,del} ->    DC = State0#state.dirtyCnt-1,
-                        {nop,State0#state{dirtyCnt=DC}};
-        {del,del} ->    {del,State0};
-        {del,upd} ->    {upd,State0};
-        {upd,upd} ->    {upd,State0};        
-        {upd,del} ->    {del,State0}        
-    end,
-    ets:insert(TableId, list_to_tuple([Id,O,element(2,OldRow)|Fields])),
-    State1.
