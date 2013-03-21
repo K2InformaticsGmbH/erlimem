@@ -222,7 +222,6 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
                             {StmtRef, #drvstmt{ columns  = Clms
                                               , fsm      = StmtFsm
                                               , maxrows  = MaxRows}
-                                              %, cmdstr   = Sql}
                             }),
                 Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
                 ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
