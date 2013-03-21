@@ -37,7 +37,7 @@
                         %%                        <<"restart">>
                         %% update ChangeList   =  [{Id,Op,[{Col1,"Value1"}..{ColN,"ValueN"}]}]
                         %% filter FilterSpec   =  {'and',[{Col1,["ValueA".."ValueN"]}, {Col2,["ValueX"]}]}
-                        %% sort   SortSpec     =  [{Col1,'asc'}..{ColN,'desc'}]
+                        %% sort   GuiSortSpec  =  [{Col1,'asc'}..{ColN,'desc'}]
         , row_with_key/3
         ]).
 
@@ -45,11 +45,12 @@
                   id
                 , bl                  %% block length -> State
                 , stmtRef             %% statement reference
+                , stmtCols            %% statement columns
                 , rowFun              %% RowFun -> State
                 , sortFun             %% SortFun -> State
-                , sortSpec            %% SortSpec (based on statement full map)
+                , sortSpec            %% SortSpec [{Ti1,Ci1'asc'}..{TiN,CiN,'desc'}]
                 , replyToFun          %% reply fun
-                , sess_pid            %% pid of erlimem_session spawned this fsm
+                , drvSessPid          %% pid of erlimem_session spawned this fsm
                 }).
 
 -record(state,  { %% fsm combined state
@@ -59,6 +60,7 @@
                 , bl                  %% block_length (passed .. init)
                 , gl                  %% gui max length (row count) = gui_max(#state.bl)
                 , stmtRef             %% statement reference
+                , stmtCols            %% statement columns
                 , rowFun              %% RowFun
                 , sortSpec            %% from imem statement, changed by gui events
                 , sortFun             %% from imem statement, follows sortSpec (calculated by imem statement)
@@ -92,6 +94,7 @@
                 , tailLock = false    %% tailMode locked
                 , stack = undefined   %% command stack {button,Button,ReplyTo}
                 , replyToFun          %% reply fun
+                , sql = <<"">>        %% sql string
                 }).
 
 -define(block_size,10).
@@ -141,16 +144,18 @@ start_link(#stmtResult{}=StmtResult,Id,BlockLength) ->
     {?MODULE,Pid}.
 
 fsm_ctx(#stmtResult{ stmtRef  = StmtRef
+                   , stmtCols = StmtCols
                    , rowFun   = RowFun
                    , sortFun  = SortFun
                    , sortSpec = SortSpec }, DrvSessPid, Id, BL) ->
     #ctx{ id         = Id
         , bl         = BL
         , stmtRef    = StmtRef
+        , stmtCols   = StmtCols
         , rowFun     = RowFun
         , sortFun    = SortFun
         , sortSpec   = SortSpec
-        , sess_pid   = DrvSessPid}.
+        , drvSessPid = DrvSessPid}.
 
 stop(Pid) -> 
 	gen_fsm:send_all_state_event(Pid,stop).
@@ -183,29 +188,43 @@ rows({Rows,Completed},{?MODULE,Pid}) ->
     % ?Debug("rows ~p ~p", [length(Rows),Completed]),
     gen_fsm:send_event(Pid,{rows, {Rows,Completed}}).
 
-fetch(FetchMode,TailMode, #state{ctx = #ctx{sess_pid=DrvSessPid},stmtRef=StmtRef}=State) ->
+fetch(FetchMode,TailMode, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}=State0) ->
     Opts = case {FetchMode,TailMode} of
         {none,none} ->    [];
         {FM,none} ->      [{fetch_mode,FM}];
         {FM,TM} ->        [{fetch_mode,FM},{tail_mode,TM}]
     end,
     case gen_server:call(DrvSessPid, [fetch_recs_async, Opts, StmtRef]) of
-        ok -> ?Debug("fetch (~p, ~p) ok", [FetchMode, TailMode]);
-        {error, Error} -> ?Error("fetch exception ~p", [Error])
-    end,
-    NewPfc=State#state.pfc+1,
-    State#state{pfc=NewPfc}.
+        %% driver session maps to imem_sec:fetch_recs_async(SKey, Opts, Pid, Sock)
+        %% driver session maps to imem_meta:fetch_recs_async(Opts, Pid, Sock)
+        ok -> 
+            ?Debug("fetch(~p, ~p) ok", [FetchMode, TailMode]),
+            State0#state{pfc=State0#state.pfc+1};
+        {error, Error} -> 
+            ?Error("fetch(~p, ~p) -> ~p", [FetchMode, TailMode, Error]),
+            State0
+    end.
 
 prefetch(filling,#state{pfc=0}=State) ->  fetch(none,none,State);
 prefetch(filling,State) ->                State;
 prefetch(_,State) ->                      State.
 
-fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{sess_pid=DrvSessPid}}=State) ->
+fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{drvSessPid=DrvSessPid}}=State) ->
     Result = gen_server:call(DrvSessPid, [fetch_close, StmtRef]),
     ?Debug("fetch_close -- ~p", [Result]),
     State#state{pfc=0}.
 
-
+filter_and_sort(FilterSpec, SortSpec, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
+    case gen_server:call(DrvSessPid, [filter_and_sort, StmtRef, FilterSpec, SortSpec]) of
+        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, FilterSpec, SortSpec)
+        %% driver session maps to imem_meta:filter_and_sort(Pid, FilterSpec, SortSpec)
+        {ok, NewSql, NewSortFun} ->
+            ?Info("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, {ok, NewSql, NewSortFun}]),
+            {ok, NewSql, NewSortFun}; 
+        {error, Error} -> 
+            ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Error]),
+            {error, Error}
+    end.
 
 %% ====================================================================
 %% Server functions
@@ -218,7 +237,10 @@ fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{sess_pid=DrvSessPid}}=State) ->
 %%          {stop, StopReason}
 %% --------------------------------------------------------------------
 
-init(#ctx{bl=BL,replyToFun=ReplyTo,stmtRef=StmtRef,rowFun=RowFun,sortFun=SortFun,sortSpec=SortSpec}=Ctx) ->
+init(#ctx{bl=BL,replyToFun=ReplyTo
+         , stmtRef=StmtRef,stmtCols=StmtCols
+         , rowFun=RowFun,sortFun=SortFun
+         , sortSpec=SortSpec}=Ctx) ->
     TableId=ets:new(raw, [ordered_set]),        %% {Id,Op,Keys,Col1,Col2,...Coln}
     IndexId=ets:new(ind, [ordered_set]),        %% {{SortFun(Keys),Id},Id}
     FilterSpec = ?NoFilter, 
@@ -228,6 +250,7 @@ init(#ctx{bl=BL,replyToFun=ReplyTo,stmtRef=StmtRef,rowFun=RowFun,sortFun=SortFun
                  , tableId      = TableId
                  , indexId      = IndexId
                  , stmtRef      = StmtRef
+                 , stmtCols     = StmtCols
                  , rowFun       = RowFun
                  , sortFun      = SortFun
                  , sortSpec     = SortSpec
@@ -631,9 +654,9 @@ handle_event({filter, FilterSpec, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_filter(SN, FilterSpec, State1),
     {next_state, SN, State2#state{tailLock=true}};
-handle_event({sort, SortSpec, ReplyTo}, SN, State0) ->
+handle_event({sort, GuiSortSpec, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
-    State2 = data_sort(SN, SortSpec, State1),
+    State2 = data_sort(SN, GuiSortSpec, State1),
     {next_state, SN, State2#state{tailLock=true}};
 handle_event({button, <<"close">>, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(SN, ReplyTo, State0),
@@ -702,23 +725,28 @@ code_change(_OldVsn, SN, StateData, _Extra) ->
 gui_max(BL) when BL < 10 -> 30;
 gui_max(BL) -> 3 * BL.
 
-gui_response(Gres0, #state{nav=raw,rawCnt=RawCnt,replyToFun=ReplyTo}=State) ->
-    Gres1 = Gres0#gres{cnt=RawCnt,toolTip=list_to_binary(integer_to_list(RawCnt))},
+gui_response_log(#gres{sql= <<"">>}=Gres) ->
+    ?Debug("gui_response ~p", [Gres]);
+gui_response_log(Gres) ->
+    ?Info("gui_response ~p", [Gres#gres.sql]).
+
+gui_response(#gres{state=SN}=Gres0, #state{nav=raw,rawCnt=RawCnt,replyToFun=ReplyTo,sql=Sql}=State0) ->
+    Gres1 = Gres0#gres{state=atom_to_binary(SN,utf8),cnt=RawCnt,toolTip=list_to_binary(integer_to_list(RawCnt)),sql=Sql},
     ReplyTo(Gres1),
-    ?Debug("gui_response ~p", [Gres1]),
-    State;
-gui_response(Gres0, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,guiCol=true,replyToFun=ReplyTo}=State) ->
+    gui_response_log(Gres1),
+    State0#state{sql= <<"">>};
+gui_response(#gres{state=SN}=Gres0, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,guiCol=true,replyToFun=ReplyTo,sql=Sql}=State0) ->
     ToolTip = integer_to_list(RawCnt) ++ [$/] ++ integer_to_list(IndCnt) ++ " page needs refresh",
-    Gres1 = Gres0#gres{cnt=IndCnt,toolTip=list_to_binary(ToolTip)},
+    Gres1 = Gres0#gres{state=atom_to_binary(SN,utf8),cnt=IndCnt,toolTip=list_to_binary(ToolTip),sql=Sql},
     ReplyTo(Gres1),
-    ?Debug("gui_response  ~p", [Gres1]),
-    State;
-gui_response(Gres, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,replyToFun=ReplyTo}=State) ->
+    gui_response_log(Gres1),
+    State0#state{sql= <<"">>};
+gui_response(#gres{state=SN}=Gres, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,replyToFun=ReplyTo,sql=Sql}=State0) ->
     ToolTip = integer_to_list(RawCnt) ++ [$/] ++ integer_to_list(IndCnt),
-    Gres1 = Gres#gres{cnt=IndCnt,toolTip=list_to_binary(ToolTip)},
+    Gres1 = Gres#gres{state=atom_to_binary(SN,utf8),cnt=IndCnt,toolTip=list_to_binary(ToolTip),sql=Sql},
     ReplyTo(Gres1),
-    ?Debug("gui_response ~p", [Gres1]),
-    State.
+    gui_response_log(Gres1),
+    State0#state{sql= <<"">>}.
 
 gui_close(GuiResult,State) -> 
     ?Debug("gui_close () ~p", [GuiResult#gres.state]),
@@ -1283,8 +1311,7 @@ data_filter(SN,?NoFilter,#state{nav=ind,srt=false}=State0) ->
     State1 = gui_clear(ind_clear(State0#state{nav=raw})),
     serve_top(SN, State1);
 data_filter(SN,FilterSpec,#state{sortFun=SortFun}=State0) ->
-    ?Info("data_filter ~p~n", [FilterSpec]),
-    %% TODO: transform FilterSpec
+    ?Info("data_filter ~p", [FilterSpec]),
     State1 = data_index(SortFun,FilterSpec,State0),
     serve_top(SN, State1).
 
@@ -1295,11 +1322,17 @@ data_sort(SN,?NoSort,#state{filterSpec=?NoFilter}=State0) ->
     %% No filter in place, clear index table and go to raw navigation
     State1 = gui_clear(ind_clear(State0#state{nav=raw,srt=false})),
     serve_top(SN, State1);
-data_sort(SN,SortSpec,#state{sortFun=SortFun,filterSpec=FilterSpec}=State0) ->
-    ?Info("data_sort ~p~n", [SortSpec]),
-    %% TODO: transform SortSpec and let DB generate SortFun
-    State1 = data_index(SortFun,FilterSpec,State0),
-    serve_top(SN, State1).
+data_sort(SN,SortSpec,#state{filterSpec=FilterSpec}=State0) ->
+    ?Info("data_sort ~w ~w", [SortSpec,FilterSpec]),
+    case filter_and_sort(FilterSpec, SortSpec, State0) of
+        {ok, NewSql, NewSortFun} ->
+            ?Info("data_sort ~p ~p", [NewSql,NewSortFun]),
+            State1 = data_index(NewSortFun,FilterSpec,State0),
+            serve_top(SN, State1#state{sql=list_to_binary(NewSql)});
+        {error, Error} ->
+            Message = list_to_binary(io_lib:format("~p",[Error])),
+            gui_nop(#gres{state=SN,beep=true,message=Message}, State0)
+    end.
 
 data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=RowFun}=State0) ->
     FilterFun = filter_fun(FilterSpec),
