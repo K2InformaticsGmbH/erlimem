@@ -47,7 +47,7 @@
 
 %% statement APIs
 -export([ get_columns/1
-        , gui_req/3
+        , gui_req/4
         , row_with_key/2
         ]).
 
@@ -59,7 +59,7 @@ exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr,
 exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> call(Pid, [Cmd|Args]).
 row_with_key(RowId,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {row_with_key, StmtRef, RowId}).
-gui_req(Cmd, Param,          {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {gui_req, StmtRef, Cmd, Param}).
+gui_req(Cmd,Param,ReplyFun,  {?MODULE, StmtRef, Pid}) -> gen_server:cast(Pid, {gui_req, StmtRef, Cmd, Param, ReplyFun}).
 get_columns(                 {?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {columns, StmtRef}).
 
 get_stmts(PidStr) -> gen_server:call(list_to_pid(PidStr), get_stmts).
@@ -128,22 +128,6 @@ handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};
 handle_call(stop, _From, State) ->
     {stop,normal, ok, State};
-handle_call({gui_req, StmtRef, Cmd, Param}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
-    erlang:cancel_timer(Timer),
-    ?Debug("~p in statements ~p", [StmtRef, Stmts]),
-    case lists:keyfind(StmtRef, 1, Stmts) of
-        {_, #drvstmt{fsm=StmtFsm}} ->
-            StmtFsm:gui_req(Cmd, Param,
-                fun(#gres{} = Gres) ->
-                    ?Debug("resp for gui ~p", [Gres]),
-                    gen_server:reply(From, Gres)
-                end),
-            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {noreply,State#state{idle_timer=NewTimer}};
-        false ->
-            NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {reply,#gres{},State#state{idle_timer=NewTimer}}
-    end;
 handle_call({columns, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     case lists:keyfind(StmtRef, 1, Stmts) of
@@ -201,6 +185,15 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             {noreply,State#state{idle_timer=NewTimer,event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
     end.
 
+handle_cast({gui_req, StmtRef, Cmd, Param, ReplyFun}, #state{idle_timer=Timer,stmts=Stmts} = State) ->
+    erlang:cancel_timer(Timer),
+    ?Debug("~p in statements ~p", [StmtRef, Stmts]),
+    case lists:keyfind(StmtRef, 1, Stmts) of
+        {_, #drvstmt{fsm=StmtFsm}} -> StmtFsm:gui_req(Cmd, Param, ReplyFun);
+        false -> ok
+    end,
+    NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
+    {noreply, State#state{idle_timer=NewTimer}};
 handle_cast(Request, State) ->
     ?Error([session, self()], "unknown cast ~p", [Request]),
     {noreply, State}.
@@ -213,17 +206,21 @@ handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State
             {error, Exception} ->
                 ?Error("throw ~p", [Exception]),
                 throw(Exception);
-            {ok, #stmtResult{stmtCols = Clms, rowFun = Fun, stmtRef = StmtRef} = SRslt} when is_function(Fun) ->
+            {ok, #stmtResult{ stmtCols = Columns
+                            , rowFun   = Fun
+                            , stmtRef  = StmtRef
+                            , sortSpec = SortSpec} = SRslt} when is_function(Fun) ->
+                if SortSpec =/= [] -> ?Info("sort_spec ~p", [SortSpec]); true -> ok end,
                 ?Debug("RX ~p", [SRslt]),
                 {_,StmtFsmPid} = StmtFsm = erlimem_fsm:start_link(SRslt, "what is it?", MaxRows),
                 % monitoring StmtFsmPid
                 erlang:monitor(process, StmtFsmPid),
                 NStmts = lists:keystore(StmtRef, 1, Stmts,
-                            {StmtRef, #drvstmt{ columns  = Clms
+                            {StmtRef, #drvstmt{ columns  = Columns
                                               , fsm      = StmtFsm
-                                              , maxrows  = MaxRows}
+                                              , maxrows  = MaxRows }
                             }),
-                Rslt = {ok, Clms, {?MODULE, StmtRef, self()}},
+                Rslt = {ok, [{cols, Columns}, {sort_spec, SortSpec}], {?MODULE, StmtRef, self()}},
                 ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
                 gen_server:reply(Form, Rslt),
                 {noreply, State#state{stmts=NStmts}};
