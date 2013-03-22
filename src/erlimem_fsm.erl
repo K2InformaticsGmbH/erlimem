@@ -5,6 +5,8 @@
 -include("gres.hrl").
 -include_lib("imem/include/imem_sql.hrl").
 
+-define(RawMax,99999999).
+-define(RawMin,0).
 -define(NoKey,{}).      %% placeholder for unavailable key tuple (recs)
 -define(KeyMax,[]).     %% value bigger than any possible sort key {SortFun(Recs),Id}
 -define(KeyMin,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
@@ -68,10 +70,10 @@
                 , filterFun           %% follows filterSpec
 
                 , rawCnt = 0          %% buffer row count
-                , rawTop = 99999999   %% id of top buffer row 
+                , rawTop = ?RawMax    %% id of top buffer row 
                 , rawBot = 0          %% id of bottom buffer row
                 , dirtyCnt = 0        %% count of dirty rows in buffer
-                , dirtyTop = 99999999 %% record id of first dirty row in buffer
+                , dirtyTop = ?RawMax  %% record id of first dirty row in buffer
                 , dirtyBot = 0        %% record id of last dirty row in buffer
 
                 , indCnt = 0          %% count of indexed buffer entries (after filtering) 
@@ -225,6 +227,29 @@ filter_and_sort(FilterSpec, SortSpec, #state{ctx = #ctx{drvSessPid=DrvSessPid},s
             ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Error]),
             {error, Error}
     end.
+
+update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
+    case gen_server:call(DrvSessPid, [update_cursor_prepare, StmtRef, ChangeList]) of
+        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, ChangeList)
+        %% driver session maps to imem_meta:filter_and_sort(Pid, ChangeList)
+        ok ->
+            ?Info("update_cursor_prepare(~p) -> ~p", [ChangeList, ok]); 
+        {error, Error} -> 
+            ?Error("update_cursor_prepare(~p) -> ~p", [ChangeList, Error]),
+            {error, Error}
+    end.
+
+update_cursor_execute(Lock, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
+    case gen_server:call(DrvSessPid, [update_cursor_execute, StmtRef, Lock]) of
+        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, Lock)
+        %% driver session maps to imem_meta:filter_and_sort(Pid, Lock)
+        {error, Error} -> 
+            ?Error("update_cursor_execute(~p) -> ~p", [Error]),
+            {error, Error};
+        ChangedKeys ->
+            ?Info("update_cursor_execute(~p) -> ~p", [ChangedKeys])
+    end.
+
 
 %% ====================================================================
 %% Server functions
@@ -772,7 +797,6 @@ gui_ins(#gres{rows=Rows}=GuiResult, #state{guiCnt=GuiCnt}=State0) ->
     Cnt = length(Rows),
     ?Debug("gui_ins (~p) ~p ~p", [Cnt, GuiResult#gres.state, GuiResult#gres.loop]),
     gui_response(GuiResult#gres{operation= <<"ins">>},State0#state{guiCnt=GuiCnt+Cnt}).
-
 
 gui_replace_from(Top,Limit,GuiResult,#state{nav=raw,tableId=TableId,rowFun=RowFun}=State0) ->
     Ids = case ets:lookup(TableId, Top) of
@@ -1429,13 +1453,56 @@ upd_tuple([],Tuple) -> Tuple;
 upd_tuple([{Cp,Value}|Fields],Tuple) ->
     upd_tuple(Fields,setelement(Cp+3, Tuple, Value)).
 
-data_commit(SN, #state{guiTop=GuiTop,guiBot=GuiBot}=State) -> 
-    %% ToDo: recalculate dirty rows using KeyUpdate
-    %%       serve errors if present (no matter the size)
-    gui_replace(GuiTop, GuiBot, #gres{state=SN},State). 
+data_commit(SN, #state{nav=Nav,tableId=TableId,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot}=State0) ->
+    ChangeList = change_list(TableId, DirtyCnt, DirtyTop, DirtyBot),
+    ?Info("ChangeList length must match DirtyCnt ~p ~p",[length(ChangeList),DirtyCnt]),
+    case update_cursor_prepare(ChangeList,State0) of
+        ok ->
+            case update_cursor_execute(optimistic, State0) of
+                {error,ExecErr} ->
+                    ExecMessage = list_to_binary(io_lib:format("~p",[ExecErr])),
+                    gui_nop(#gres{state=SN,beep=true,message=ExecMessage},State0);
+                ChangedKeys ->
+                    {_GuiCnt,GuiTop,GuiBot} = case Nav of
+                        raw ->  data_commit_raw(TableId,ChangedKeys,0,?RawMax,?RawMin);
+                        ind ->  data_commit_raw(TableId,ChangedKeys,0,?KeyMax,?KeyMin)
+                    end,
+                    % ToDo: limit output for big key spans
+                    gui_replace(GuiTop, GuiBot, #gres{state=SN},State0)
+            end;
+        {error,PrepError} ->
+            %%       serve errors if present (no matter the size)
+            PrepMessage = list_to_binary(io_lib:format("~p",[PrepError])),
+            gui_nop(#gres{state=SN,beep=true,message=PrepMessage},State0)
+    end.
+
+data_commit_raw(_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
+data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)=={})  ->
+    ets:delete(TableId,Id),    
+    data_commit_raw(TableId,ChangedKeys,GuiCnt,GuiTop,GuiBot);
+data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
+    ets:insert(TableId,{Id,nop,NK}),    
+    data_commit_raw(TableId,ChangedKeys,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
+
+data_commit_ind(_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
+data_commit_ind(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)=={})  ->
+    % ToDo: delete index entry (needs old Key and FiterFun)
+    ets:delete(TableId,Id),    
+    data_commit_ind(TableId,ChangedKeys,GuiCnt,GuiTop,GuiBot);
+data_commit_ind(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
+    % ToDo: delete old index entry (needs old Key and FiterFun)
+    ets:insert(TableId,{Id,nop,NK}), %% needs RowFun
+    % ToDo: insert new index entry (needs FilterFun)    
+    data_commit_ind(TableId,ChangedKeys,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
 
 data_rollback(SN, #state{guiTop=GuiTop,guiBot=GuiBot}=State) -> 
     %% ToDo: recalculate dirty rows using Keys in buffer
     %%       serve errors if present (no matter the size)
     gui_replace(GuiTop, GuiBot, #gres{state=SN},State).  
 
+change_list(TableId, _DirtyCnt, DirtyTop, DirtyBot) ->
+    Guard = [{'>=',{element,1,'$1'},DirtyTop}
+            ,{'=<',{element,1,'$1'},DirtyBot}
+            ,{'=/=',nop,{element,2,'$1'}}],
+    Rows = ets:select(TableId,[{'$1',Guard,['$_']}]),
+    [tuple_to_list(R) || R <- Rows]. 
