@@ -14,6 +14,7 @@
 -define(NoFilter,{}).   %% empty filter spec
 
 -define(IndexRecord(__R,__SortFun),{{__SortFun(element(3,__R)),element(1,__R)},element(1,__R)}).
+-define(IndexKey(__R,__SortFun),{__SortFun(element(3,__R)),element(1,__R)}).
 
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
@@ -202,7 +203,7 @@ fetch(FetchMode,TailMode, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtR
         ok -> 
             ?Debug("fetch(~p, ~p) ok", [FetchMode, TailMode]),
             State0#state{pfc=State0#state.pfc+1};
-        {error, Error} -> 
+        {_, Error} -> 
             ?Error("fetch(~p, ~p) -> ~p", [FetchMode, TailMode, Error]),
             State0
     end.
@@ -223,7 +224,7 @@ filter_and_sort(FilterSpec, SortSpec, #state{ctx = #ctx{drvSessPid=DrvSessPid},s
         {ok, NewSql, NewSortFun} ->
             ?Info("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, {ok, NewSql, NewSortFun}]),
             {ok, NewSql, NewSortFun}; 
-        {error, Error} -> 
+        {_, Error} -> 
             ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Error]),
             {error, Error}
     end.
@@ -234,7 +235,7 @@ update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtR
         %% driver session maps to imem_meta:filter_and_sort(Pid, ChangeList)
         ok ->
             ?Info("update_cursor_prepare(~p) -> ~p", [ChangeList, ok]); 
-        {error, Error} -> 
+        {_, Error} -> 
             ?Error("update_cursor_prepare(~p) -> ~p", [ChangeList, Error]),
             {error, Error}
     end.
@@ -243,11 +244,12 @@ update_cursor_execute(Lock, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=Stm
     case gen_server:call(DrvSessPid, [update_cursor_execute, StmtRef, Lock]) of
         %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, Lock)
         %% driver session maps to imem_meta:filter_and_sort(Pid, Lock)
-        {error, Error} -> 
+        {_, Error} -> 
             ?Error("update_cursor_execute(~p) -> ~p", [Error]),
             {error, Error};
         ChangedKeys ->
-            ?Info("update_cursor_execute(~p) -> ~p", [ChangedKeys])
+            ?Info("update_cursor_execute(~p) -> ~p", [Lock,ChangedKeys]),
+            ChangedKeys
     end.
 
 
@@ -282,7 +284,7 @@ init(#ctx{bl=BL,replyToFun=ReplyTo
                  , replyToFun   = ReplyTo
                  },
     State1 = data_index(SortFun,FilterSpec,State0),           
-    {ok, empty, set_buf_counters(State1)}.
+    {ok, empty, reset_buf_counters(State1)}.
 
 navigation_type(SortFun,FilterSpec) -> 
     case catch (SortFun(1)) of
@@ -303,6 +305,24 @@ navigation_type(SortFun,FilterSpec) ->
 
 % buf_bot(#state{nav=raw,rawBot=RawBot}) -> RawBot;
 % buf_bot(#state{nav=ind,indBot=IndBot}) -> IndBot.
+
+reset_buf_counters(#state{nav=Nav,tableId=TableId,indexId=IndexId}=State0) -> 
+    RawCnt=ets:info(TableId,size),
+    {RawTop,RawBot} = if 
+        (RawCnt > 0) ->
+            {ets:first(TableId),ets:last(TableId)};
+        true ->
+            {?RawMax,?RawMin}
+    end,
+    IndCnt = ets:info(IndexId,size),
+    {IndTop,IndBot} = if 
+        (Nav == ind) andalso (IndCnt > 0) ->
+            {ets:first(IndexId),ets:last(IndexId)};
+        true ->
+            {?KeyMax,?KeyMin}
+    end,
+    set_buf_counters(State0#state{rawCnt=RawCnt,rawTop=RawTop,rawBot=RawBot
+                                 ,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}).
 
 set_buf_counters(#state{nav=raw,rawCnt=RawCnt,rawTop=RawTop,rawBot=RawBot}=State0) -> 
     State0#state{bufCnt=RawCnt,bufTop=RawTop,bufBot=RawBot};
@@ -786,12 +806,12 @@ gui_clear(GuiResult,State0) ->
     State1 = State0#state{guiCnt=0,guiTop=undefined,guiBot=undefined,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"clr">>,keep=0}, State1).
 
-gui_replace(NewTop,NewBot,GuiResult,State0) ->
-    ?Debug("gui_replace ~p .. ~p ~p ~p", [NewTop, NewBot, GuiResult#gres.state, GuiResult#gres.loop]),
-    Rows=all_rows(NewTop,NewBot,State0),
-    Cnt=length(Rows),
-    State1 = State0#state{guiCnt=Cnt,guiTop=NewTop,guiBot=NewBot,guiCol=false},
-    gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1).
+% gui_replace(NewTop,NewBot,GuiResult,State0) ->
+%     ?Debug("gui_replace ~p .. ~p ~p ~p", [NewTop, NewBot, GuiResult#gres.state, GuiResult#gres.loop]),
+%     Rows=all_rows(NewTop,NewBot,State0),
+%     Cnt=length(Rows),
+%     State1 = State0#state{guiCnt=Cnt,guiTop=NewTop,guiBot=NewBot,guiCol=false},
+%     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1).
 
 gui_ins(#gres{rows=Rows}=GuiResult, #state{guiCnt=GuiCnt}=State0) ->
     Cnt = length(Rows),
@@ -1156,13 +1176,13 @@ serve_stack(SN , #state{stack=_Stack}=State) ->
     State.
 
 
-all_rows(Top, Bot, _) when Top > Bot -> [];
-all_rows(Top, Bot, #state{nav=raw,rowFun=RowFun,tableId=TableId}) ->
-    Rows = ets:select(TableId,[{'$1',[{'>=',{element,1,'$1'},Top},{'=<',{element,1,'$1'},Bot}],['$_']}]),
-    [gui_row_expand(R, TableId, RowFun) || R <- Rows];
-all_rows(Top, Bot, #state{nav=ind,indexId=IndexId,tableId=TableId}) ->
-    IndRows = ets:select(IndexId,[{'$1',[{'>=',{element,1,'$1'},Top},{'=<',{element,1,'$1'},Bot}],['$_']}]),
-    [gui_row_as_list(ets:lookup(TableId, Id)) || {_,Id} <- IndRows].
+% all_rows(Top, Bot, _) when Top > Bot -> [];
+% all_rows(Top, Bot, #state{nav=raw,rowFun=RowFun,tableId=TableId}) ->
+%     Rows = ets:select(TableId,[{'$1',[{'>=',{element,1,'$1'},Top},{'=<',{element,1,'$1'},Bot}],['$_']}]),
+%     [gui_row_expand(R, TableId, RowFun) || R <- Rows];
+% all_rows(Top, Bot, #state{nav=ind,indexId=IndexId,tableId=TableId}) ->
+%     IndRows = ets:select(IndexId,[{'$1',[{'>=',{element,1,'$1'},Top},{'=<',{element,1,'$1'},Bot}],['$_']}]),
+%     [gui_row_as_list(ets:lookup(TableId, Id)) || {_,Id} <- IndRows].
 
 rows_after(_, [], _) -> [];
 rows_after(Key, Limit, #state{nav=raw,rowFun=RowFun,tableId=TableId}) ->
@@ -1397,7 +1417,7 @@ data_update(SN,ChangeList,#state{stmtCols=StmtCols}=State0) ->
     {State1,InsRows} = data_update_rows(ChangeList,length(StmtCols),State0,[]),
     gui_ins(#gres{state=SN,rows=InsRows}, State1).
 
-data_update_rows([], _, State, Acc) -> {State, lists:reverse(Acc)};
+data_update_rows([], _, State0, Acc) -> {set_buf_counters(State0), lists:reverse(Acc)};
 data_update_rows([Ch|ChangeList], ColCount, State0, Acc) ->
     case data_update_row(Ch, ColCount, State0) of
         {[], S1} ->     data_update_rows(ChangeList, ColCount, S1, Acc);         %% upd / del
@@ -1426,11 +1446,12 @@ data_update_row({Id,Op,Fields}, _ColCount, #state{tableId=TableId}=State0) when 
     end,
     case {element(2,OldRow),Op} of 
         {ins,del} ->    ets:delete(TableId, Id);
-        _ ->            ets:insert(TableId, list_to_tuple([Id,O|tuple_to_list(NewTuple)]))
+        _ ->            ets:insert(TableId, setelement(2, NewTuple, O))
     end,
     RawCnt=ets:info(TableId,size),
+    RawTop=ets:first(TableId),
     RawBot=ets:last(TableId),
-    {[],State1#state{rawCnt=RawCnt,rawBot=RawBot}};
+    {[],State1#state{rawCnt=RawCnt,rawTop=RawTop,rawBot=RawBot}};
 data_update_row([_,ins|Fields], ColCount, #state{nav=raw,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
     Id = RawBot+1,          
     RowAsList = [Id,ins,?NoKey|tuple_to_list(ins_tuple(Fields,ColCount))],
@@ -1453,24 +1474,32 @@ upd_tuple([],Tuple) -> Tuple;
 upd_tuple([{Cp,Value}|Fields],Tuple) ->
     upd_tuple(Fields,setelement(Cp+3, Tuple, Value)).
 
-data_commit(SN, #state{nav=Nav,tableId=TableId,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot}=State0) ->
+data_commit(SN, #state{nav=Nav,gl=GL,tableId=TableId,indexId=IndexId
+                      ,rowFun=RowFun,sortFun=SortFun,filterFun=FilterFun
+                      ,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot}=State0) ->
     ChangeList = change_list(TableId, DirtyCnt, DirtyTop, DirtyBot),
     ?Info("ChangeList length must match DirtyCnt ~p ~p",[length(ChangeList),DirtyCnt]),
+    ?Info("ChangeList ~p",[ChangeList]),
     case update_cursor_prepare(ChangeList,State0) of
         ok ->
             case update_cursor_execute(optimistic, State0) of
-                {error,ExecErr} ->
+                {_,ExecErr} ->
                     ExecMessage = list_to_binary(io_lib:format("~p",[ExecErr])),
                     gui_nop(#gres{state=SN,beep=true,message=ExecMessage},State0);
                 ChangedKeys ->
-                    {_GuiCnt,GuiTop,GuiBot} = case Nav of
+                    {_GuiCnt,GuiTop,_GuiBot} = case Nav of
                         raw ->  data_commit_raw(TableId,ChangedKeys,0,?RawMax,?RawMin);
-                        ind ->  data_commit_raw(TableId,ChangedKeys,0,?KeyMax,?KeyMin)
+                        ind ->  data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,0,?KeyMax,?KeyMin)
                     end,
-                    % ToDo: limit output for big key spans
-                    gui_replace(GuiTop, GuiBot, #gres{state=SN},State0)
+                    case change_list(TableId, DirtyCnt, DirtyTop, DirtyBot) of
+                        [] ->   State1 = State0#state{dirtyCnt=0,dirtyTop=?RawMax,dirtyBot=?RawMin},
+                                gui_replace_from(GuiTop,GL,#gres{state=SN,focus=1},reset_buf_counters(State1));
+                        DL ->   ?Error("Dirty rows after commit ~p",[DL]),
+                                Message = <<"Dirty rows after commit">>,
+                                gui_replace_from(GuiTop,GL,#gres{state=SN,focus=1,message=Message},reset_buf_counters(State0))
+                    end
             end;
-        {error,PrepError} ->
+        {_,PrepError} ->
             %%       serve errors if present (no matter the size)
             PrepMessage = list_to_binary(io_lib:format("~p",[PrepError])),
             gui_nop(#gres{state=SN,beep=true,message=PrepMessage},State0)
@@ -1484,21 +1513,70 @@ data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
     ets:insert(TableId,{Id,nop,NK}),    
     data_commit_raw(TableId,ChangedKeys,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
 
-data_commit_ind(_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
-data_commit_ind(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)=={})  ->
-    % ToDo: delete index entry (needs old Key and FiterFun)
+data_commit_ind(_,_,_,_,_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
+data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)=={})  ->
+    [OldRow] = ets:lookup(TableId,Id),
+    ets:delete(IndexId,?IndexKey(OldRow,SortFun)),
     ets:delete(TableId,Id),    
-    data_commit_ind(TableId,ChangedKeys,GuiCnt,GuiTop,GuiBot);
-data_commit_ind(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
-    % ToDo: delete old index entry (needs old Key and FiterFun)
-    ets:insert(TableId,{Id,nop,NK}), %% needs RowFun
-    % ToDo: insert new index entry (needs FilterFun)    
-    data_commit_ind(TableId,ChangedKeys,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
+    data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt,GuiTop,GuiBot);
+data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
+    [OldRow] = ets:lookup(TableId,Id),
+    ets:delete(IndexId,?IndexKey(OldRow,SortFun)),
+    NewRow = raw_row_expand({Id,nop,NK}, RowFun),
+    ets:insert(TableId,NewRow),
+    case FilterFun(NewRow) of
+        true ->     
+            NewKey = ?IndexKey(NewRow,SortFun),
+            ets:insert(IndexId,{NewKey,Id}),
+            data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt+1,min(GuiTop,NewKey),max(GuiBot,NewKey));
+        false ->
+            data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt,GuiTop,GuiBot)
+    end.
 
-data_rollback(SN, #state{guiTop=GuiTop,guiBot=GuiBot}=State) -> 
-    %% ToDo: recalculate dirty rows using Keys in buffer
-    %%       serve errors if present (no matter the size)
-    gui_replace(GuiTop, GuiBot, #gres{state=SN},State).  
+data_rollback(SN, #state{nav=Nav,gl=GL,tableId=TableId,indexId=IndexId
+                      ,rowFun=RowFun,sortFun=SortFun,filterFun=FilterFun
+                      ,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot}=State0) -> 
+    ChangeList = change_list(TableId, DirtyCnt, DirtyTop, DirtyBot),
+    {_GuiCnt,GuiTop,_GuiBot} = case Nav of
+        raw ->  data_rollback_raw(TableId,ChangeList,0,?RawMax,?RawMin);
+        ind ->  data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,0,?KeyMax,?KeyMin)
+    end,
+    case change_list(TableId, DirtyCnt, DirtyTop, DirtyBot) of
+        [] ->   State1 = State0#state{dirtyCnt=0,dirtyTop=?RawMax,dirtyBot=?RawMin},
+
+                gui_replace_from(GuiTop,GL,#gres{state=SN,focus=1},reset_buf_counters(State1));
+        DL ->   ?Error("Dirty rows after rollback ~p",[DL]),
+                Message = <<"Dirty rows after rollback">>,
+                gui_replace_from(GuiTop,GL,#gres{state=SN,focus=1,message=Message},reset_buf_counters(State0))
+    end.
+
+data_rollback_raw(_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
+data_rollback_raw(TableId,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) when (element(1,element(3,Row))=={})  ->
+    Id = element(1,Row),
+    ets:delete(TableId,Id),    
+    data_rollback_raw(TableId,ChangeList,GuiCnt,GuiTop,GuiBot);
+data_rollback_raw(TableId,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) ->
+    Id = element(1,Row),
+    ets:insert(TableId,{Id,nop,element(1,element(3,Row))}),    
+    data_rollback_raw(TableId,ChangeList,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
+
+data_rollback_ind(_,_,_,_,_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
+data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) when (element(1,element(3,Row))=={}) ->
+    Id = element(1,Row),
+    ets:delete(TableId,Id),    
+    data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,GuiCnt,GuiTop,GuiBot);
+data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) ->
+    Id = element(1,Row),
+    RestRow = raw_row_expand({Id,nop,element(1,element(3,Row))}, RowFun),
+    ets:insert(TableId,RestRow),
+    case FilterFun(RestRow) of
+        true ->     
+            RestKey = ?IndexKey(RestRow,SortFun),
+            ets:insert(IndexId,{RestKey,Id}),
+            data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,GuiCnt+1,min(GuiTop,RestKey),max(GuiBot,RestKey));
+        false ->    
+            data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,GuiCnt,GuiTop,GuiBot)
+    end.
 
 change_list(TableId, _DirtyCnt, DirtyTop, DirtyBot) ->
     Guard = [{'>=',{element,1,'$1'},DirtyTop}
