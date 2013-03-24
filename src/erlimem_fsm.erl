@@ -7,7 +7,6 @@
 
 -define(RawMax,99999999).
 -define(RawMin,0).
--define(NoKey,{}).      %% placeholder for unavailable key tuple (recs)
 -define(KeyMax,[]).     %% value bigger than any possible sort key {SortFun(Recs),Id}
 -define(KeyMin,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
 -define(NoSort,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
@@ -15,6 +14,7 @@
 
 -define(IndexRecord(__R,__SortFun),{{__SortFun(element(3,__R)),element(1,__R)},element(1,__R)}).
 -define(IndexKey(__R,__SortFun),{__SortFun(element(3,__R)),element(1,__R)}).
+-define(NoKey,{}).      %% placeholder for unavailable key tuple (recs)
 
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
@@ -1415,6 +1415,7 @@ data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=Row
 
 data_update(SN,ChangeList,#state{stmtCols=StmtCols}=State0) ->
     {State1,InsRows} = data_update_rows(ChangeList,length(StmtCols),State0,[]),
+    ?Info("InsRows ~p",[InsRows]),
     gui_ins(#gres{state=SN,rows=InsRows}, State1).
 
 data_update_rows([], _, State0, Acc) -> {set_buf_counters(State0), lists:reverse(Acc)};
@@ -1452,22 +1453,33 @@ data_update_row({Id,Op,Fields}, _ColCount, #state{tableId=TableId}=State0) when 
     RawTop=ets:first(TableId),
     RawBot=ets:last(TableId),
     {[],State1#state{rawCnt=RawCnt,rawTop=RawTop,rawBot=RawBot}};
-data_update_row([_,ins|Fields], ColCount, #state{nav=raw,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
+data_update_row({_,ins,Fields}, ColCount, #state{nav=raw,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
     Id = RawBot+1,          
-    RowAsList = [Id,ins,?NoKey|tuple_to_list(ins_tuple(Fields,ColCount))],
-    ets:insert(TableId, list_to_tuple(RowAsList)),    
-    {[RowAsList],State0#state{rawCnt=RawCnt+1,rawBot=Id,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}};
-data_update_row([_,ins|Fields], ColCount, #state{nav=ind,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,indCnt=IndCnt,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
+    ?Info("insert fields ~p", [Fields]),
+    RowAsList = [Id,ins,{?NoKey}|tuple_to_list(ins_tuple(Fields,ColCount))],
+    ets:insert(TableId, list_to_tuple(RowAsList)),
+    {[[Id,ins|lists:nthtail(3, RowAsList)]],State0#state{rawCnt=RawCnt+1,rawBot=Id,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}};
+data_update_row({_,ins,Fields}, ColCount, #state{nav=ind,tableId=TableId,rawCnt=RawCnt,rawBot=RawBot,guiCnt=GuiCnt,dirtyTop=DT0,dirtyCnt=DC0}=State0) ->
     Id = RawBot+1,          
-    RowAsList = [Id,ins,?NoKey|tuple_to_list(ins_tuple(Fields,ColCount))],
+    ?Info("insert fields ~p", [Fields]),
+    RowAsList = [Id,ins,{?NoKey}|tuple_to_list(ins_tuple(Fields,ColCount))],
     ets:insert(TableId, list_to_tuple(RowAsList)),    
-    {[RowAsList],State0#state{rawCnt=RawCnt+1,rawBot=Id,indCnt=IndCnt+1,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}}.
+    {[[Id,ins|lists:nthtail(3, RowAsList)]],State0#state{rawCnt=RawCnt+1,rawBot=Id,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}}.
 
 ins_tuple(Fields,ColCount) ->
     ins_tuple(Fields,ColCount,erlang:make_tuple(ColCount,[])).
 
 ins_tuple([],_,Tuple) -> Tuple;
-ins_tuple([{Cp,Value}|Fields],ColCount,Tuple) ->
+ins_tuple([{Cp,Value}|Fields],ColCount,Tuple) when is_integer(Cp) ->
+    ins_tuple(Fields,ColCount,setelement(Cp, Tuple, Value));
+ins_tuple([{Cn,Value}|Fields],ColCount,Tuple) ->
+    Cp = case Cn of
+        "time" ->       1;
+        "x" ->          2;
+        "fX" ->         3;
+        "oneOverX" ->   4;
+        "comment" ->    5
+    end,  
     ins_tuple(Fields,ColCount,setelement(Cp, Tuple, Value)).
 
 upd_tuple([],Tuple) -> Tuple;
@@ -1506,7 +1518,7 @@ data_commit(SN, #state{nav=Nav,gl=GL,tableId=TableId,indexId=IndexId
     end.
 
 data_commit_raw(_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
-data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)=={})  ->
+data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)==?NoKey)  ->
     ets:delete(TableId,Id),    
     data_commit_raw(TableId,ChangedKeys,GuiCnt,GuiTop,GuiBot);
 data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
@@ -1514,7 +1526,7 @@ data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
     data_commit_raw(TableId,ChangedKeys,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
 
 data_commit_ind(_,_,_,_,_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
-data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)=={})  ->
+data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)==?NoKey)  ->
     [OldRow] = ets:lookup(TableId,Id),
     ets:delete(IndexId,?IndexKey(OldRow,SortFun)),
     ets:delete(TableId,Id),    
@@ -1535,39 +1547,41 @@ data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],G
 
 data_rollback(SN, #state{nav=Nav,gl=GL,tableId=TableId,indexId=IndexId
                       ,rowFun=RowFun,sortFun=SortFun,filterFun=FilterFun
-                      ,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot}=State0) -> 
-    ChangeList = change_list(TableId, DirtyCnt, DirtyTop, DirtyBot),
+                      ,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot
+                      ,guiCnt=GuiCnt0,guiTop=GuiTop0}=State0) -> 
+    ChangeList = change_tuples(TableId, DirtyCnt, DirtyTop, DirtyBot),
     {_GuiCnt,GuiTop,_GuiBot} = case Nav of
         raw ->  data_rollback_raw(TableId,ChangeList,0,?RawMax,?RawMin);
         ind ->  data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,0,?KeyMax,?KeyMin)
     end,
+    ?Info("rollback ChangeList ~p GuiCnt ~p GuiTop ~p",[ChangeList,_GuiCnt, GuiTop]),
     case change_list(TableId, DirtyCnt, DirtyTop, DirtyBot) of
         [] ->   State1 = State0#state{dirtyCnt=0,dirtyTop=?RawMax,dirtyBot=?RawMin},
-
-                gui_replace_from(GuiTop,GL,#gres{state=SN,focus=1},reset_buf_counters(State1));
+                gui_replace_from(GuiTop0,GL,#gres{state=SN,focus=1},reset_buf_counters(State1));
         DL ->   ?Error("Dirty rows after rollback ~p",[DL]),
                 Message = <<"Dirty rows after rollback">>,
                 gui_replace_from(GuiTop,GL,#gres{state=SN,focus=1,message=Message},reset_buf_counters(State0))
     end.
 
 data_rollback_raw(_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
-data_rollback_raw(TableId,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) when (element(1,element(3,Row))=={})  ->
+data_rollback_raw(TableId,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) when (element(1,element(3,Row))==?NoKey)  ->
     Id = element(1,Row),
     ets:delete(TableId,Id),    
     data_rollback_raw(TableId,ChangeList,GuiCnt,GuiTop,GuiBot);
 data_rollback_raw(TableId,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) ->
     Id = element(1,Row),
-    ets:insert(TableId,{Id,nop,element(1,element(3,Row))}),    
+    ?Info("rollback replace ~p",[{Id,nop,element(3,Row)}]),
+    ets:insert(TableId,{Id,nop,element(3,Row)}),    
     data_rollback_raw(TableId,ChangeList,GuiCnt+1,min(GuiTop,Id),max(GuiBot,Id)).
 
 data_rollback_ind(_,_,_,_,_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
-data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) when (element(1,element(3,Row))=={}) ->
+data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) when (element(1,element(3,Row))==?NoKey) ->
     Id = element(1,Row),
     ets:delete(TableId,Id),    
     data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,GuiCnt,GuiTop,GuiBot);
 data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiCnt,GuiTop,GuiBot) ->
     Id = element(1,Row),
-    RestRow = raw_row_expand({Id,nop,element(1,element(3,Row))}, RowFun),
+    RestRow = raw_row_expand({Id,nop,element(3,Row)}, RowFun),
     ets:insert(TableId,RestRow),
     case FilterFun(RestRow) of
         true ->     
@@ -1578,9 +1592,11 @@ data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiC
             data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,GuiCnt,GuiTop,GuiBot)
     end.
 
-change_list(TableId, _DirtyCnt, DirtyTop, DirtyBot) ->
+change_tuples(TableId, _DirtyCnt, DirtyTop, DirtyBot) ->
     Guard = [{'>=',{element,1,'$1'},DirtyTop}
             ,{'=<',{element,1,'$1'},DirtyBot}
             ,{'=/=',nop,{element,2,'$1'}}],
-    Rows = ets:select(TableId,[{'$1',Guard,['$_']}]),
-    [tuple_to_list(R) || R <- Rows]. 
+    ets:select(TableId,[{'$1',Guard,['$_']}]). 
+
+change_list(TableId, DirtyCnt, DirtyTop, DirtyBot) ->
+    [tuple_to_list(R) || R <- change_tuples(TableId, DirtyCnt, DirtyTop, DirtyBot)]. 
