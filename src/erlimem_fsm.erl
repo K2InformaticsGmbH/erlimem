@@ -7,14 +7,14 @@
 
 -define(RawMax,99999999).
 -define(RawMin,0).
--define(KeyMax,[]).     %% value bigger than any possible sort key {SortFun(Recs),Id}
--define(KeyMin,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
--define(NoSort,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
+-define(IndMax,[]).     %% value bigger than any possible sort key {SortFun(Recs),Id}
+-define(IndMin,{}).     %% value smaller than any possible sort key {SortFun(Recs),Id}
+-define(NoSort,{}).     %% signalling no sort
 -define(NoFilter,{}).   %% empty filter spec
 
--define(IndexRecord(__R,__SortFun),{{__SortFun(element(3,__R)),element(1,__R)},element(1,__R)}).
--define(IndexKey(__R,__SortFun),{__SortFun(element(3,__R)),element(1,__R)}).
--define(NoKey,{}).      %% placeholder for unavailable key tuple (recs)
+-define(IndRec(__R,__SortFun),{{__SortFun(element(3,__R)),element(1,__R)},element(1,__R)}).
+-define(IndKey(__R,__SortFun),{__SortFun(element(3,__R)),element(1,__R)}).
+-define(NoKey,{}).      %% placeholder for unavailable key tuple within RowKey tuple
 
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
@@ -78,8 +78,8 @@
                 , dirtyBot = 0        %% record id of last dirty row in buffer
 
                 , indCnt = 0          %% count of indexed buffer entries (after filtering) 
-                , indTop = ?KeyMax    %% smallest index after filtering, initialized to big value
-                , indBot = ?KeyMin    %% biggest index after filtering, initialized to small value
+                , indTop = ?IndMax    %% smallest index after filtering, initialized to big value
+                , indBot = ?IndMin    %% biggest index after filtering, initialized to small value
 
                 , bufCnt = 0          %% buffer row count           (either rawCnt or indCnt, depending on nav)
                 , bufTop              %% id of top buffer row       (either rawTop or indTop, depending on nav)
@@ -102,7 +102,8 @@
 
 -define(block_size,10).
 -define(MustCommit,<<"Please commit or rollback changes before clearing data">>).
--define(UnknownCommand,<<"Unknown Command">>).
+-define(UnknownCommand,<<"Unknown command">>).
+-define(NoPendingUpdates,<<"No pending changes">>).
 
 
 %% --------------------------------------------------------------------
@@ -319,7 +320,7 @@ reset_buf_counters(#state{nav=Nav,tableId=TableId,indexId=IndexId}=State0) ->
         (Nav == ind) andalso (IndCnt > 0) ->
             {ets:first(IndexId),ets:last(IndexId)};
         true ->
-            {?KeyMax,?KeyMin}
+            {?IndMax,?IndMin}
     end,
     set_buf_counters(State0#state{rawCnt=RawCnt,rawTop=RawTop,rawBot=RawBot
                                  ,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}).
@@ -687,9 +688,17 @@ handle_event({update, ChangeList, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_update(SN, ChangeList, State1),
     {next_state, SN, State2#state{tailLock=true}};
+handle_event({button, <<"commit">>, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0 ->
+    State1 = reply_stack(SN, ReplyTo, State0),
+    State2 = gui_nop(#gres{state=SN,beep=true,message= ?NoPendingUpdates},State1),
+    {next_state, SN, State2#state{tailLock=true}};
 handle_event({button, <<"commit">>, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_commit(SN, State1),
+    {next_state, SN, State2#state{tailLock=true}};
+handle_event({button, <<"rollback">>, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0 ->
+    State1 = reply_stack(SN, ReplyTo, State0),
+    State2 = gui_nop(#gres{state=SN,beep=true,message= ?NoPendingUpdates},State1),
     {next_state, SN, State2#state{tailLock=true}};
 handle_event({button, <<"rollback">>, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
@@ -824,18 +833,20 @@ gui_replace_from(Top,Limit,GuiResult,#state{nav=raw,tableId=TableId,rowFun=RowFu
         _  ->   [Top | ids_after(Top, Limit-1, State0)]
     end,
     Cnt = length(Ids),
-    Rows = rows_for_ids(Ids,TableId,RowFun),
-    NewGuiTop = hd(Ids),
-    NewGuiBot = lists:last(Ids),
+    {Rows,NewGuiTop,NewGuiBot} = case Cnt of
+        0 ->    {[],?RawMax,?RawMin};
+        _ ->    {rows_for_ids(Ids,TableId,RowFun),hd(Ids),lists:last(Ids)}
+    end,
     ?Debug("gui_replace_from  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1);
 gui_replace_from(Top,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
     Keys = [Top | keys_after(Top, Limit-1, State0)],
     Cnt = length(Keys),
-    Rows = rows_for_keys(Keys,TableId),
-    NewGuiTop = Top,
-    NewGuiBot = lists:last(Keys),
+    {Rows,NewGuiTop,NewGuiBot} = case Cnt of
+        0 ->    {[],?IndMax,?IndMin};
+        _ ->    {rows_for_keys(Keys,TableId),Top,lists:last(Keys)}
+    end,
     ?Debug("gui_replace_from  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt}, State1).
@@ -846,18 +857,20 @@ gui_replace_until(Bot,Limit,GuiResult,#state{nav=raw,tableId=TableId,rowFun=RowF
         _  ->   ids_before(Bot, Limit-1, State0) ++ [Bot]
     end,
     Cnt = length(Ids),
-    Rows = rows_for_ids(Ids,TableId,RowFun),
-    NewGuiTop = hd(Ids),
-    NewGuiBot = lists:last(Ids),
+    {Rows,NewGuiTop,NewGuiBot} = case Cnt of
+        0 ->    {[],?RawMax,?RawMin};
+        _ ->    {rows_for_ids(Ids,TableId,RowFun),hd(Ids),lists:last(Ids)}
+    end,
     ?Debug("gui_replace_until  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt}, State1);
 gui_replace_until(Bot,Limit,GuiResult,#state{nav=ind,tableId=TableId}=State0) ->
     Keys = keys_before(Bot, Limit-1, State0) ++ [Bot],
     Cnt = length(Keys),
-    Rows = rows_for_keys(Keys,TableId),
-    NewGuiTop = hd(Keys),
-    NewGuiBot = Bot,
+    {Rows,NewGuiTop,NewGuiBot} = case Cnt of
+        0 ->    {[],?IndMax,?IndMin};
+        _ ->    {rows_for_keys(Keys,TableId),hd(Keys),Bot}
+    end,
     ?Debug("gui_replace_until  ~p .. ~p ~p ~p", [NewGuiTop, NewGuiBot, GuiResult#gres.state, GuiResult#gres.loop]),
     State1 = State0#state{guiCnt=Cnt,guiTop=NewGuiTop,guiBot=NewGuiBot,guiCol=false},
     gui_response(GuiResult#gres{operation= <<"rpl">>,rows=Rows,keep=Cnt},State1).
@@ -910,7 +923,7 @@ gui_append(GuiResult,#state{nav=raw,bl=BL,gl=GL,guiCnt=GuiCnt,guiBot=GuiBot}=Sta
     State1 = State0#state{guiCnt=NewGuiCnt,guiTop=NewGuiTop,guiBot=NewGuiBot},
     gui_response(GuiResult#gres{operation= <<"app">>,rows=Rows,keep=NewGuiCnt}, State1);
 gui_append(GuiResult,#state{nav=ind,bl=BL,tableId=TableId,guiCnt=0}=State0) ->
-    Keys=keys_after(?KeyMin, BL, State0),
+    Keys=keys_after(?IndMin, BL, State0),
     case length(Keys) of
         0 ->    
              gui_response(GuiResult#gres{operation= <<"clr">>,keep=0}, State0);
@@ -1336,7 +1349,7 @@ data_append(SN, {Recs,_Complete},#state{nav=ind,tableId=TableId,indexId=IndexId
     NewRawBot = RawBot+Cnt,
     RawRows = [raw_row_expand({I,nop,RK}, RowFun) || {I,RK} <- lists:zip(lists:seq(RawBot+1, NewRawBot), Recs)],
     ets:insert(TableId, RawRows),
-    IndRows = [?IndexRecord(R,SortFun) || R <- lists:filter(FilterFun,RawRows)],
+    IndRows = [?IndRec(R,SortFun) || R <- lists:filter(FilterFun,RawRows)],
     % ?Info("data_append -IndRows- ~p", [IndRows]),
     FunCol = fun({X,_},{IT,IB,C}) ->  {IT,IB,(C orelse ((X>IT) and (X<IB)))}  end, 
     {_,_,Collision} = lists:foldl(FunCol, {GuiTop, GuiBot, false}, IndRows),    %% detect data collisions with gui content
@@ -1399,7 +1412,7 @@ data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=Row
     IndexFun = fun(R,Acc) -> 
                 case FilterFun(R) of 
                     true ->
-                        ets:insert(IndexId, ?IndexRecord(R,SortFun)),
+                        ets:insert(IndexId, ?IndRec(R,SortFun)),
                         Acc+1;
                     false -> 
                         Acc
@@ -1501,7 +1514,7 @@ data_commit(SN, #state{nav=Nav,gl=GL,tableId=TableId,indexId=IndexId
                 ChangedKeys ->
                     {_GuiCnt,GuiTop,_GuiBot} = case Nav of
                         raw ->  data_commit_raw(TableId,ChangedKeys,0,?RawMax,?RawMin);
-                        ind ->  data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,0,?KeyMax,?KeyMin)
+                        ind ->  data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,0,?IndMax,?IndMin)
                     end,
                     case change_list(TableId, DirtyCnt, DirtyTop, DirtyBot) of
                         [] ->   State1 = State0#state{dirtyCnt=0,dirtyTop=?RawMax,dirtyBot=?RawMin},
@@ -1528,17 +1541,17 @@ data_commit_raw(TableId,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
 data_commit_ind(_,_,_,_,_,[],GuiCnt,GuiTop,GuiBot) -> {GuiCnt,GuiTop,GuiBot};
 data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) when (element(1,NK)==?NoKey)  ->
     [OldRow] = ets:lookup(TableId,Id),
-    ets:delete(IndexId,?IndexKey(OldRow,SortFun)),
+    ets:delete(IndexId,?IndKey(OldRow,SortFun)),
     ets:delete(TableId,Id),    
     data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt,GuiTop,GuiBot);
 data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
     [OldRow] = ets:lookup(TableId,Id),
-    ets:delete(IndexId,?IndexKey(OldRow,SortFun)),
+    ets:delete(IndexId,?IndKey(OldRow,SortFun)),
     NewRow = raw_row_expand({Id,nop,NK}, RowFun),
     ets:insert(TableId,NewRow),
     case FilterFun(NewRow) of
         true ->     
-            NewKey = ?IndexKey(NewRow,SortFun),
+            NewKey = ?IndKey(NewRow,SortFun),
             ets:insert(IndexId,{NewKey,Id}),
             data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt+1,min(GuiTop,NewKey),max(GuiBot,NewKey));
         false ->
@@ -1548,11 +1561,11 @@ data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],G
 data_rollback(SN, #state{nav=Nav,gl=GL,tableId=TableId,indexId=IndexId
                       ,rowFun=RowFun,sortFun=SortFun,filterFun=FilterFun
                       ,dirtyCnt=DirtyCnt,dirtyTop=DirtyTop,dirtyBot=DirtyBot
-                      ,guiCnt=GuiCnt0,guiTop=GuiTop0}=State0) -> 
+                      ,guiTop=GuiTop0}=State0) -> 
     ChangeList = change_tuples(TableId, DirtyCnt, DirtyTop, DirtyBot),
     {_GuiCnt,GuiTop,_GuiBot} = case Nav of
         raw ->  data_rollback_raw(TableId,ChangeList,0,?RawMax,?RawMin);
-        ind ->  data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,0,?KeyMax,?KeyMin)
+        ind ->  data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,0,?IndMax,?IndMin)
     end,
     ?Info("rollback ChangeList ~p GuiCnt ~p GuiTop ~p",[ChangeList,_GuiCnt, GuiTop]),
     case change_list(TableId, DirtyCnt, DirtyTop, DirtyBot) of
@@ -1585,7 +1598,7 @@ data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[Row|ChangeList],GuiC
     ets:insert(TableId,RestRow),
     case FilterFun(RestRow) of
         true ->     
-            RestKey = ?IndexKey(RestRow,SortFun),
+            RestKey = ?IndKey(RestRow,SortFun),
             ets:insert(IndexId,{RestKey,Id}),
             data_rollback_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangeList,GuiCnt+1,min(GuiTop,RestKey),max(GuiBot,RestKey));
         false ->    
