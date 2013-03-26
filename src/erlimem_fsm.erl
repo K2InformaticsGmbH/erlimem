@@ -878,8 +878,10 @@ gres(SN,Cnt,ToolTip,Sql,DirtyCount,GuiCol,Gres0) ->
     end,    
     SNbin = list_to_binary(atom_to_list(SN)),
     TTbin = list_to_binary(ToolTip),
-    Gres0#gres{state=SNbin,cnt=Cnt,toolTip=TTbin,sql=Sql,hide=Hide,promote=Promo}.
+    Gres0#gres{state=SNbin,cnt=Cnt,toolTip=TTbin,sql=Sql,hide=empty_override(Hide),promote=empty_override(Promo)}.
 
+empty_override([]) -> [{}];
+empty_override(List) -> List.
 
 gui_close(GuiResult,State) -> 
     ?Debug("gui_close () ~p", [GuiResult#gres.state]),
