@@ -227,7 +227,10 @@ filter_and_sort(FilterSpec, SortSpec, #state{ctx = #ctx{drvSessPid=DrvSessPid},s
             {ok, NewSql, NewSortFun}; 
         {_, Error} -> 
             ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Error]),
-            {error, Error}
+            {error, Error};
+        Else ->
+            ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Else]),
+            {error, Else}            
     end.
 
 update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
@@ -842,9 +845,9 @@ gui_max(BL) when BL < 10 -> 30;
 gui_max(BL) -> 3 * BL.
 
 gui_response_log(#gres{sql= <<"">>}=Gres) ->
-    ?Debug("gui_response ~p", [Gres]);
+    ?Debug("gui_response ~p", [Gres#gres{rows=[]}]);
 gui_response_log(Gres) ->
-    ?Info("gui_response ~p", [Gres#gres.sql]).
+    ?Debug("gui_response ~p", [Gres#gres.sql]).
 
 gui_response(#gres{state=SN}=Gres0, #state{nav=raw,rawCnt=RawCnt,dirtyCnt=DirtyCnt,replyToFun=ReplyTo,sql=Sql}=State0) ->
     Gres1 = gres(SN,RawCnt,integer_to_list(RawCnt),Sql,DirtyCnt,false,Gres0),
@@ -1223,7 +1226,7 @@ serve_bot(SN, Loop, #state{nav=Nav,bl=BL,gl=GL,bufCnt=BufCnt,bufBot=BufBot,guiCn
             gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0); 
         (GuiBot == BufBot) ->
             %% gui is already there, noting .. do       
-            gui_nop(#gres{state=SN,loop=Loop,focus=-1},State0); 
+            gui_nop(#gres{state=SN,loop=Loop,focus=-1,beep=true},State0); 
         (Nav == raw) andalso (GuiBot < BufBot-GL) ->
             %% uninitialized view, must refresh    
             gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0); 
@@ -1512,7 +1515,7 @@ data_sort(SN,SortSpec,#state{filterSpec=FilterSpec}=State0) ->
     ?Info("data_sort ~p data_filter ~p", [SortSpec,FilterSpec]),
     case filter_and_sort(FilterSpec, SortSpec, State0) of
         {ok, NewSql, NewSortFun} ->
-            ?Info("data_sort ~p ~p", [NewSql,NewSortFun]),
+            ?Info("data_sort NewSql=~p NewSortFun=~p", [NewSql,NewSortFun]),
             State1 = data_index(NewSortFun,FilterSpec,State0),
             serve_top(SN, State1#state{sql=list_to_binary(NewSql)});
         {error, Error} ->
@@ -1544,6 +1547,7 @@ data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=Row
     IndCnt = ets:foldl(IndexFun, 0, TableId),
     IndTop = ets:first(IndexId),
     IndBot = ets:last(IndexId),
+    ?Info("data_index nav=~p Srt=~p IndCnt=~p IndTop=~p IndBot=~p",[Nav,Srt,IndCnt,IndTop,IndBot]),
     set_buf_counters(State1#state{nav=Nav,srt=Srt
         ,sortFun=SortFun,filterSpec=FilterSpec,filterFun=FilterFun
         ,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}).
@@ -1607,15 +1611,6 @@ ins_tuple(Fields,ColCount) ->
 
 ins_tuple([],_,Tuple) -> Tuple;
 ins_tuple([{Cp,Value}|Fields],ColCount,Tuple) when is_integer(Cp) ->
-    ins_tuple(Fields,ColCount,setelement(Cp, Tuple, Value));
-ins_tuple([{Cn,Value}|Fields],ColCount,Tuple) ->
-    Cp = case Cn of
-        "time" ->       1;
-        "x" ->          2;
-        "fX" ->         3;
-        "oneOverX" ->   4;
-        "comment" ->    5
-    end,  
     ins_tuple(Fields,ColCount,setelement(Cp, Tuple, Value)).
 
 upd_tuple([],Tuple) -> Tuple;
