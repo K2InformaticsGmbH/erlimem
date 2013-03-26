@@ -232,9 +232,10 @@ all_tables({ok, Sess}) ->
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
     ?LOG("~p -> ~p", [Sql, {Clms, Statement}]),
-    Rows = Statement:gui_req(button, <<">|">>),
-    ?LOG("received ~p", [Rows]),
-    Statement:gui_req(button, <<"close">>),
+    Statement:gui_req(button, <<">|">>, fun(GReq) ->
+        ?LOG("received ~p", [GReq#gres.rows])
+    end),
+    Statement:gui_req(button, <<"close">>, fun(_GReq) -> ok end),
     ?LOG("statement ~p closed", [Statement]),
     ?LOG("------------------------------------------------------------").
 
@@ -245,33 +246,41 @@ table_create_select_navigate_drop({ok, Sess}) ->
     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
     ?LOG("select ~p", [{Clms, Statement}]),
 
-    Rows = Statement:gui_req(button, <<">">>),
-    ?assert(length(Rows#gres.rows) > 0),
-    ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows#gres.rows)),
+    Statement:gui_req(button, <<">">>, fun(GReq) ->
+        ?LOG("rows ~p", [GReq#gres.rows]),
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(GReq#gres.rows))
+    end),
 
-    Rows0 = Statement:gui_req(button, <<">">>),
-    ?assert(length(Rows0#gres.rows) > 0),
-    ?assertEqual([{from, 11}, {to, 20}], ?RowIdRange(Rows0#gres.rows)),
+    Statement:gui_req(button, <<">">>, fun(GReq) ->
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 11}, {to, 20}], ?RowIdRange(GReq#gres.rows))
+    end),
 
-    Rows1 = Statement:gui_req(button, <<">>">>),
-    ?assert(length(Rows#gres.rows) > 0),
-    ?assertEqual([{from, 31}, {to, 40}], ?RowIdRange(Rows1#gres.rows)),
+    Statement:gui_req(button, <<">>">>, fun(GReq) ->
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 31}, {to, 40}], ?RowIdRange(GReq#gres.rows))
+    end),
 
-    Rows2 = Statement:gui_req(button, <<"<<">>),
-    ?assert(length(Rows2#gres.rows) > 0),
-    ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(Rows2#gres.rows)),
+    Statement:gui_req(button, <<"<<">>, fun(GReq) ->
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(GReq#gres.rows))
+    end),
 
-    Rows3 = Statement:gui_req(button, <<">">>),
-    ?assert(length(Rows3#gres.rows) > 0),
-    ?assertEqual([{from, 26}, {to, 35}], ?RowIdRange(Rows3#gres.rows)),
+    Statement:gui_req(button, <<">">>, fun(GReq) ->
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 26}, {to, 35}], ?RowIdRange(GReq#gres.rows))
+    end),
 
-    Rows4 = Statement:gui_req(button, <<"|<">>),
-    ?assert(length(Rows4#gres.rows) > 0),
-    ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows4#gres.rows)),
+    Statement:gui_req(button, <<"|<">>, fun(GReq) ->
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(GReq#gres.rows))
+    end),
 
-    Rows5 = Statement:gui_req(button, 25),
-    ?assert(length(Rows5#gres.rows) > 0),
-    ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(Rows5#gres.rows)),
+    Statement:gui_req(button, 25, fun(GReq) ->
+        ?assert(length(GReq#gres.rows) > 0),
+        ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(GReq#gres.rows))
+    end),
 
     ?LOG(">  Read rows from  1 to 10", []),
     ?LOG(">  Read rows from 10 to 20", []),
@@ -281,7 +290,7 @@ table_create_select_navigate_drop({ok, Sess}) ->
     ?LOG("|< Read rows from  1 to 10", []),
     ?LOG("@ 25 Read 16 row from 25", []),
 
-    Statement:gui_req(button, <<"close">>),
+    Statement:gui_req(button, <<"close">>, fun(_GReq) -> ok end),
     drop_table(Sess, atom_to_list(?Table)),
     ?LOG("------------------------------------------------------------").
 
