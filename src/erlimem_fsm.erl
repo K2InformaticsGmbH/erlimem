@@ -249,7 +249,7 @@ update_cursor_execute(Lock, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=Stm
         %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, Lock)
         %% driver session maps to imem_meta:filter_and_sort(Pid, Lock)
         {_, Error} -> 
-            ?Error("update_cursor_execute(~p) -> ~p", [Error]),
+            ?Error("update_cursor_execute(~p) -> ~p", [Lock,Error]),
             {error, Error};
         ChangedKeys ->
             ?Debug("update_cursor_execute(~p) -> ~p", [Lock,ChangedKeys]),
