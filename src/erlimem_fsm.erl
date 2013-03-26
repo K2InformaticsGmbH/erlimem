@@ -862,11 +862,11 @@ gui_response(#gres{state=SN}=Gres0, #state{nav=ind,rawCnt=RawCnt,indCnt=IndCnt,d
     State0#state{sql= <<"">>}.
 
 gres(SN,Cnt,ToolTip,Sql,DirtyCount,GuiCol,Gres0) ->
-    Hide = case DirtyCount of
+    Disable = case DirtyCount of
         0 ->    
-            [{<<"commit">>,<<"nothing to commit">>},{<<"rollback">>,<<"nothing to rollback">>}|Gres0#gres.hide];
+            [{<<"commit">>,<<"nothing to commit">>},{<<"rollback">>,<<"nothing to rollback">>}|Gres0#gres.disable];
         _ ->    
-            Gres0#gres.hide
+            Gres0#gres.disable
     end,    
     Promo = if
         (SN == aborted) ->
@@ -878,7 +878,7 @@ gres(SN,Cnt,ToolTip,Sql,DirtyCount,GuiCol,Gres0) ->
     end,    
     SNbin = list_to_binary(atom_to_list(SN)),
     TTbin = list_to_binary(ToolTip),
-    Gres0#gres{state=SNbin,cnt=Cnt,toolTip=TTbin,sql=Sql,hide=empty_override(Hide),promote=empty_override(Promo)}.
+    Gres0#gres{state=SNbin,cnt=Cnt,toolTip=TTbin,sql=Sql,disable=empty_override(Disable),promote=empty_override(Promo)}.
 
 empty_override([]) -> [{}];
 empty_override(List) -> List.
