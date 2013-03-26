@@ -8,6 +8,8 @@
                 , loop = <<"">>       %% gui should come back with this command -- empty string is 'undefined'
                 , rows = []           %% rows to show (append / prepend / merge)
                 , keep = 0            %% row count to be kept
-                , focus = 0           %% 0 -> default scroll depending of operation (rpl = no scroll)
+                , focus = 0           %% 0 -> default scroll depending on operation (rpl = no scroll)
                 , sql = <<"">>        %% new sql string (only present if it changes)
+                , hide = []           %% list of {<<"button name">>, <<"Comment">>} to be hidden or diabled
+                , promote = []        %% list of {<<"button name">>, <<"Comment">>} promoted to the user
                 }).
