@@ -2,19 +2,19 @@
 
 -include("erlimem.hrl").
 
--export([exec/2, recv_sync/2]).
+-export([exec/3, recv_sync/2]).
 
-exec(CmdTuple, {tcp, Socket}) ->
-    exec_catch(Socket, undefined, imem_sec, CmdTuple);
-exec(CmdTuple, {rpc, Node}) ->
-    exec_catch(undefined, Node, imem_sec, CmdTuple);
-exec(CmdTuple, {local_sec, _}) ->
-    exec_catch(undefined, node(), imem_sec, CmdTuple);
-exec(CmdTuple, {local, _}) ->
+exec(Ref, CmdTuple, {tcp, Socket}) ->
+    exec_catch(Ref, Socket, undefined, imem_sec, CmdTuple);
+exec(Ref, CmdTuple, {rpc, Node}) ->
+    exec_catch(Ref, undefined, Node, imem_sec, CmdTuple);
+exec(Ref, CmdTuple, {local_sec, _}) ->
+    exec_catch(Ref, undefined, node(), imem_sec, CmdTuple);
+exec(Ref, CmdTuple, {local, _}) ->
     {[Cmd|_], Args} = lists:split(1, tuple_to_list(CmdTuple)),
-    exec_catch(undefined, node(), imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)])).
+    exec_catch(Ref, undefined, node(), imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)])).
 
-exec_catch(Media, Node, Mod, CmdTuple) ->
+exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
     {Cmd, Args0} = lists:split(1, tuple_to_list(CmdTuple)),
     Fun = lists:nth(1, Cmd),
 
@@ -29,16 +29,14 @@ exec_catch(Media, Node, Mod, CmdTuple) ->
                 case Node of
                     Node when Node =:= node() ->
                         ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
-                        ExecRes = apply(Mod, Fun, Args),
-                        ?Debug([session, self()], "~p MFA ~p -> ~p", [?MODULE, {Mod, Fun, Args}, ExecRes]),
-                        self() ! {resp, ExecRes};
+                        ok = apply(imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
                     _ ->
                         ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
-                        self() ! rpc:call(Node, Mod, Fun, Args)
+                        ok = rpc:call(Node, imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}])
                 end;
             Socket ->
                 ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
-                gen_tcp:send(Socket, term_to_binary([Mod,Fun|Args]))
+                gen_tcp:send(Socket, term_to_binary({Ref,Mod,Fun,Args}))
         end
     catch
         _Class:Result ->
@@ -64,7 +62,7 @@ recv_sync({tcp, Sock}, Bin) ->
                 throw({{error, Exception}, erlang:get_stacktrace()});
             Term ->
                 ?Debug("TCP ___RX___ ~p", [Term]),
-                {resp, Term}
+                Term
         end;
     {error, Reason} ->
         ?Error("~p tcp error ~p", [?MODULE, Reason]),

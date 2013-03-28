@@ -80,11 +80,11 @@ init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
                 SeCo =  case Connect of
                     {local, _} -> undefined;
                     _ ->
-                        erlimem_cmds:exec({authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
-                        {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
+                        erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
+                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>),
                         ?Info("authenticated ~p -> ~p", [{User, PswdMD5}, S]),
-                        erlimem_cmds:exec({login,S}, Connect),
-                        {resp, S} = erlimem_cmds:recv_sync(Connect, <<>>),
+                        erlimem_cmds:exec(undefined, {login,S}, Connect),
+                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>),
                         ?Info("logged in ~p", [{User, S}]),
                         case Connect of
                             {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
@@ -151,11 +151,11 @@ handle_call({row_with_key, StmtRef, RowId}, From, #state{idle_timer=Timer,stmts=
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {noreply,State#state{idle_timer=NewTimer}};
 
-handle_call(Msg, {From, _} = Frm, #state{connection=Connection
-                                        ,idle_timer=Timer
-                                        ,schema=Schema
-                                        ,seco=SeCo
-                                        ,event_pids=EvtPids} = State) ->
+handle_call(Msg, From, #state{connection=Connection
+                             ,idle_timer=Timer
+                             ,schema=Schema
+                             ,seco=SeCo
+                             ,event_pids=EvtPids} = State) ->
     ?Debug("call ~p", [Msg]),
     erlang:cancel_timer(Timer),
     [Cmd|Rest] = Msg,
@@ -174,15 +174,15 @@ handle_call(Msg, {From, _} = Frm, #state{connection=Connection
             MaxRows = 0,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
-    case (catch erlimem_cmds:exec(NewMsg, Connection)) of
+    case (catch erlimem_cmds:exec(From, NewMsg, Connection)) of
         {{error, E}, ST} ->
             ?Error("cmd ~p error ~p", [Cmd, E]),
             ?Debug("~p", [ST]),
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {reply, E, State#state{idle_timer=NewTimer,event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}};
+            {reply, E, State#state{idle_timer=NewTimer,event_pids=NewEvtPids,maxrows=MaxRows}};
         _Result ->
             NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
-            {noreply,State#state{idle_timer=NewTimer,event_pids=NewEvtPids,pending=Frm,maxrows=MaxRows}}
+            {noreply,State#state{idle_timer=NewTimer,event_pids=NewEvtPids,maxrows=MaxRows}}
     end.
 
 handle_cast({gui_req, StmtRef, Cmd, Param, ReplyFun}, #state{idle_timer=Timer,stmts=Stmts} = State) ->
@@ -199,37 +199,47 @@ handle_cast(Request, State) ->
     {noreply, State}.
 
 %
+% tcp
+%
+handle_info({tcp,S,Pkt}, #state{buf=Buf}=State) ->
+    ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
+    inet:setopts(S,[{active,once}]),
+    NewBin = << Buf/binary, Pkt/binary >>,
+    ?Debug("RX ~p + ~p = ~p byte of term", [byte_size(Buf), byte_size(Pkt), byte_size(NewBin)]),
+    case (catch binary_to_term(NewBin)) of
+        {'EXIT', _Reason} ->
+            ?Debug("RX ~p byte of term, waiting...", [byte_size(NewBin)]),
+            {noreply, State#state{buf=NewBin}};
+        {From, {error, Exception}} ->
+            ?Error("throw ~p to ~p", [Exception, From]),
+            gen_server:reply(From,  {error, Exception}),
+            {noreply, State#state{buf= <<>>}};
+        {From, Term} ->
+            {noreply, NewState} = case Term of
+                {ok, #stmtResult{}} = Resp ->
+                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                    handle_info({From,Resp}, State);
+                {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                    handle_info({From,{StmtRef,{Rows,Completed}}}, State);
+                _ ->
+                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                    gen_server:reply(From, Term),
+                    {noreply, State}
+            end,
+            TSize = byte_size(term_to_binary({From, Term})),
+            RestSize = byte_size(NewBin)-TSize,
+            Rest = binary_part(NewBin, {TSize, RestSize}),
+            handle_info({tcp,S,Rest}, NewState#state{buf= <<>>})
+    end;
+handle_info({tcp_closed,Socket}, State) ->
+    ?Info("~p tcp closed ~p", [self(), Socket]),
+    {stop,normal,State};
+
+%
 % local / rpc / tcp fallback
 %
-handle_info({resp,Resp}, #state{pending=Form, stmts=Stmts,maxrows=MaxRows}=State) ->
-    case Resp of
-            {error, Exception} ->
-                ?Error("throw ~p", [Exception]),
-                throw(Exception);
-            {ok, #stmtResult{ stmtCols = Columns
-                            , rowFun   = Fun
-                            , stmtRef  = StmtRef
-                            , sortSpec = SortSpec} = SRslt} when is_function(Fun) ->
-                if SortSpec =/= [] -> ?Info("sort_spec ~p", [SortSpec]); true -> ok end,
-                ?Debug("RX ~p", [SRslt]),
-                {_,StmtFsmPid} = StmtFsm = erlimem_fsm:start_link(SRslt, "what is it?", MaxRows),
-                % monitoring StmtFsmPid
-                erlang:monitor(process, StmtFsmPid),
-                NStmts = lists:keystore(StmtRef, 1, Stmts,
-                            {StmtRef, #drvstmt{ columns  = Columns
-                                              , fsm      = StmtFsm
-                                              , maxrows  = MaxRows }
-                            }),
-                Rslt = {ok, [{cols, Columns}, {sort_spec, SortSpec}], {?MODULE, StmtRef, self()}},
-                ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
-                gen_server:reply(Form, Rslt),
-                {noreply, State#state{stmts=NStmts}};
-            Term ->
-                ?Debug("Async __RX__ ~p For ~p", [Term, Form]),
-                gen_server:reply(Form, Term),
-                {noreply, State}
-    end;
-handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
+handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #drvstmt{fsm=StmtFsm}} ->
             case {Rows,Completed} of
@@ -250,41 +260,35 @@ handle_info({StmtRef,{Rows,Completed}}, #state{stmts=Stmts}=State) when is_pid(S
             ?Error("statement ~p not found in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
             {noreply, State}
     end;
-
-%
-% tcp
-%
-handle_info({tcp,S,Pkt}, #state{buf=Buf, pending=Form}=State) ->
-    NewBin = << Buf/binary, Pkt/binary >>,
-    NewState =
-    case (catch binary_to_term(NewBin)) of
-            {'EXIT', _Reason} ->
-                ?Debug("RX ~p byte of term, waiting...", [byte_size(Pkt)]),
-                State#state{buf=NewBin};
+handle_info({From,Resp}, #state{stmts=Stmts,maxrows=MaxRows}=State) ->
+    case Resp of
             {error, Exception} ->
-                ?Error("throw ~p", [Exception]),
-                gen_server:reply(Form,  {error, Exception}),
-                State;
+                ?Error("throw ~p to ~p", [Exception, From]),
+                gen_server:reply(From,  {error, Exception}),
+                {noreply, State};
+            {ok, #stmtResult{ stmtCols = Columns
+                            , rowFun   = Fun
+                            , stmtRef  = StmtRef
+                            , sortSpec = SortSpec} = SRslt} when is_function(Fun) ->
+                if SortSpec =/= [] -> ?Info("sort_spec ~p", [SortSpec]); true -> ok end,
+                ?Debug("RX ~p", [SRslt]),
+                {_,StmtFsmPid} = StmtFsm = erlimem_fsm:start_link(SRslt, "what is it?", MaxRows),
+                % monitoring StmtFsmPid
+                erlang:monitor(process, StmtFsmPid),
+                NStmts = lists:keystore(StmtRef, 1, Stmts,
+                            {StmtRef, #drvstmt{ columns  = Columns
+                                              , fsm      = StmtFsm
+                                              , maxrows  = MaxRows }
+                            }),
+                Rslt = {ok, [{cols, Columns}, {sort_spec, SortSpec}], {?MODULE, StmtRef, self()}},
+                ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- NStmts]]),
+                gen_server:reply(From, Rslt),
+                {noreply, State#state{stmts=NStmts}};
             Term ->
-                NState = case Term of
-                    {ok, #stmtResult{}} = Resp ->
-                        {_, NS} = handle_info({resp,Resp}, State),
-                        NS;
-                    {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                        {_, NS} = handle_info({StmtRef,{Rows,Completed}}, State),
-                        NS;
-                    _ ->
-                        ?Debug("TCP async __RX__ ~p For ~p", [Term, Form]),
-                        gen_server:reply(Form, Term),
-                        State
-                end,
-                TSize = byte_size(term_to_binary(Term)),
-                RestSize = byte_size(NewBin)-TSize,
-                {noreply, NwState} = handle_info({tcp,S,binary_part(NewBin, {TSize, RestSize})}, NState#state{buf= <<>>}),
-                NwState
-    end,
-    inet:setopts(S,[{active,once}]),
-    {noreply, NewState};
+                ?Debug("Async __RX__ ~p For ~p", [Term, From]),
+                gen_server:reply(From, Term),
+                {noreply, State}
+    end;
 
 %
 % FSM Monitor events

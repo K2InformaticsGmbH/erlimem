@@ -189,7 +189,7 @@ row_with_key(RowId, ReplyTo, {?MODULE,Pid}) when is_integer(RowId) ->
     gen_fsm:send_all_state_event(Pid,{"row_with_key", RowId, ReplyTo}).
 
 rows({Rows,Completed},{?MODULE,Pid}) -> 
-    % ?Debug("rows ~p ~p", [length(Rows),Completed]),
+    ?Debug("rows ~p ~p", [length(Rows), Completed]),
     gen_fsm:send_event(Pid,{rows, {Rows,Completed}}).
 
 fetch(FetchMode,TailMode, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}=State0) ->

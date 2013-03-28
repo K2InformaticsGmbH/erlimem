@@ -164,11 +164,11 @@ db_test_() ->
         fun teardown/1,
         {with, [fun native_apis/1
                 , fun all_tables/1
-                , fun table_create_select_navigate_drop/1
-                , fun table_sort_navigate/1
-                , fun table_modify/1
-                , fun simul_insert/1
-                , fun table_tail/1
+                %, fun table_create_select_navigate_drop/1
+                %, fun table_sort_navigate/1
+                %, fun table_modify/1
+                %, fun simul_insert/1
+                %, fun table_tail/1
         ]}
         }
     }.
@@ -201,7 +201,7 @@ setup() ->
     ?LOG("+-----------------------------------------------------------+"),
     erlimem:start(),
     random:seed(erlang:now()),
-    setup(local).
+    setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
@@ -231,12 +231,14 @@ all_tables({ok, Sess}) ->
     ?LOG("--------- select from all_tables (all_tables) --------------"),
     Sql = "select name(qname) from all_tables;",
     {ok, Clms, Statement} = Sess:exec(Sql, 100),
-    ?LOG("~p -> ~p", [Sql, {Clms, Statement}]),
+    ?LOG("~p ->~n ~p", [Sql, {Clms, Statement}]),
     Statement:gui_req(button, <<">|">>, fun(GReq) ->
-        ?LOG("received ~p", [GReq#gres.rows])
+        ?LOG("received ~p", [GReq#gres.rows]),
+        Statement:gui_req(button, <<"close">>, fun(_GReq) ->
+            ?LOG("statement ~p closed", [Statement])
+        end)
     end),
-    Statement:gui_req(button, <<"close">>, fun(_GReq) -> ok end),
-    ?LOG("statement ~p closed", [Statement]),
+    timer:sleep(500),
     ?LOG("------------------------------------------------------------").
 
 table_create_select_navigate_drop({ok, Sess}) ->
