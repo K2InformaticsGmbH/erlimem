@@ -124,7 +124,7 @@ connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
 connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
-handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->    
+handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};
 handle_call(stop, _From, State) ->
     {stop,normal, ok, State};
@@ -142,7 +142,7 @@ handle_call({columns, StmtRef}, _From, #state{idle_timer=Timer,stmts=Stmts} = St
 handle_call({row_with_key, StmtRef, RowId}, From, #state{idle_timer=Timer,stmts=Stmts} = State) ->
     erlang:cancel_timer(Timer),
     ?Debug("~p in statements ~p", [StmtRef, Stmts]),
-    {_, #drvstmt{fsm=StmtFsm}} = lists:keyfind(StmtRef, 1, Stmts),     
+    {_, #drvstmt{fsm=StmtFsm}} = lists:keyfind(StmtRef, 1, Stmts),
     StmtFsm:row_with_key(RowId,
         fun(Row) ->
             ?Debug("row_with_key ~p", [Row]),
@@ -236,6 +236,57 @@ handle_info({tcp_closed,Socket}, State) ->
     ?Info("~p tcp closed ~p", [self(), Socket]),
     {stop,normal,State};
 
+
+%
+% FSM Monitor events
+%
+handle_info({'DOWN', Ref, process, StmtFsmPid, Reason}, #state{stmts=Stmts}=State) ->
+    [StmtRef|_] = [SR || {SR, DS} <- Stmts, DS#drvstmt.fsm =:= {erlimem_fsm, StmtFsmPid}],
+    NewStmts = lists:keydelete(StmtRef, 1, Stmts),
+    true = demonitor(Ref, [flush]),
+    ?Info("FSM ~p died with reason ~p for stmt ~p remaining ~p", [StmtFsmPid, Reason, StmtRef, [S || {S,_} <- NewStmts]]),
+    {noreply, State#state{stmts=NewStmts}};
+
+%
+% MNESIA Events
+%
+handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
+    case lists:keyfind(activity, 1, EvtPids) of
+        {_, Pid} when is_pid(Pid) -> Pid ! Evt;
+        Found ->
+            ?Debug([session, self()], "# ~p <- ~p", [Found, Evt])
+    end,
+    {noreply, State};
+handle_info({_,{S, Ctx, _}} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
+                                                                          S =:= delete_object;
+                                                                          S =:= delete ->
+    Tab = element(1, Ctx),
+    case lists:keyfind({table, Tab}, 1, EvtPids) of
+        {_, Pid} -> Pid ! Evt;
+        _ ->
+            case lists:keyfind({table, Tab, simple}, 1, EvtPids) of
+                {_, Pid} when is_pid(Pid) -> Pid ! Evt;
+                Found ->
+                    ?Debug([session, self()], "# ~p <- ~p", [Found, Evt])
+            end
+    end,
+    {noreply, State};
+handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:= write;
+                                                                            D =:= delete ->
+    case lists:keyfind({table, Tab, detailed}, 1, EvtPids) of
+        {_, Pid} when is_pid(Pid) -> Pid ! Evt;
+        Found ->
+            ?Debug([session, self()], "# ~p <- ~p", [Found, Evt])
+    end,
+    {noreply, State};
+
+handle_info(timeout, State) ->
+    ?Debug("~p close on timeout", [self()]),
+    {stop,normal,State};
+handle_info({tcp_closed,Sock}, State) ->
+    ?Debug("close on tcp_close ~p", [self(), Sock]),
+    {stop,normal,State};
+
 %
 % local / rpc / tcp fallback
 %
@@ -290,55 +341,6 @@ handle_info({From,Resp}, #state{stmts=Stmts,maxrows=MaxRows}=State) ->
                 {noreply, State}
     end;
 
-%
-% FSM Monitor events
-%
-handle_info({'DOWN', Ref, process, StmtFsmPid, Reason}, #state{stmts=Stmts}=State) ->
-    [StmtRef|_] = [SR || {SR, DS} <- Stmts, DS#drvstmt.fsm =:= {erlimem_fsm, StmtFsmPid}],
-    NewStmts = lists:keydelete(StmtRef, 1, Stmts),
-    true = demonitor(Ref, [flush]),
-    ?Info("FSM ~p died with reason ~p for stmt ~p remaining ~p", [StmtFsmPid, Reason, StmtRef, [S || {S,_} <- NewStmts]]),
-    {noreply, State#state{stmts=NewStmts}};
-
-%
-% MNESIA Events
-%
-handle_info({_,{complete, _}} = Evt, #state{event_pids=EvtPids}=State) ->
-    case lists:keyfind(activity, 1, EvtPids) of
-        {_, Pid} when is_pid(Pid) -> Pid ! Evt;
-        Found ->
-            ?Debug([session, self()], "# ~p <- ~p", [Found, Evt])
-    end,
-    {noreply, State};
-handle_info({_,{S, Ctx, _}} = Evt, #state{event_pids=EvtPids}=State) when S =:= write;
-                                                                          S =:= delete_object;
-                                                                          S =:= delete ->
-    Tab = element(1, Ctx),
-    case lists:keyfind({table, Tab}, 1, EvtPids) of
-        {_, Pid} -> Pid ! Evt;
-        _ ->
-            case lists:keyfind({table, Tab, simple}, 1, EvtPids) of
-                {_, Pid} when is_pid(Pid) -> Pid ! Evt;
-                Found ->
-                    ?Debug([session, self()], "# ~p <- ~p", [Found, Evt])
-            end
-    end,
-    {noreply, State};
-handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:= write;
-                                                                            D =:= delete ->
-    case lists:keyfind({table, Tab, detailed}, 1, EvtPids) of
-        {_, Pid} when is_pid(Pid) -> Pid ! Evt;
-        Found ->
-            ?Debug([session, self()], "# ~p <- ~p", [Found, Evt])
-    end,
-    {noreply, State};
-
-handle_info(timeout, State) ->
-    ?Debug("~p close on timeout", [self()]),
-    {stop,normal,State};
-handle_info({tcp_closed,Sock}, State) ->
-    ?Debug("close on tcp_close ~p", [self(), Sock]),
-    {stop,normal,State};
 handle_info(Info, State) ->
     ?Error([session, self()], "unknown info ~p", [Info]),
     {noreply, State}.
