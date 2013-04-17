@@ -167,7 +167,8 @@ handle_call(Msg, From, #state{connection=Connection
         subscribe ->
             MaxRows = 0,
             [Evt|_] = Rest,
-            NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, From}),
+            {Pid, _} = From,
+            NewEvtPids = lists:keystore(Evt, 1, EvtPids, {Evt, Pid}),
             list_to_tuple([Cmd,SeCo|Rest]);
         _ ->
             NewEvtPids = EvtPids,
