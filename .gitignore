@@ -20,6 +20,7 @@ local.properties
 ebin/
 log/
 deps/
+snapshot/
 
 # External tool builders
 .externalToolBuilders/
