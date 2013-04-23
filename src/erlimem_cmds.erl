@@ -2,7 +2,7 @@
 
 -include("erlimem.hrl").
 
--export([exec/3, recv_sync/2]).
+-export([exec/3, recv_sync/3]).
 
 exec(Ref, CmdTuple, {tcp, Socket}) ->
     exec_catch(Ref, Socket, undefined, imem_sec, CmdTuple);
@@ -36,33 +36,48 @@ exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
                 end;
             Socket ->
                 ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
-                gen_tcp:send(Socket, term_to_binary({Ref,Mod,Fun,Args}))
+                ReqBin = term_to_binary({Ref,Mod,Fun,Args}),
+                PayloadSize = byte_size(ReqBin),
+                gen_tcp:send(Socket, << PayloadSize:32, ReqBin/binary >>)
         end
     catch
         _Class:Result ->
             throw({{error, Result}, erlang:get_stacktrace()})
     end.
 
-recv_sync({M, _}, _) when M =:= rpc; M =:= local; M =:= local_sec ->
+recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         Data ->
             ?Debug("LOCAL ___RX___ ~p", [Data]),
             Data
     end;
-recv_sync({tcp, Sock}, Bin) ->
+recv_sync({tcp, Sock}, Bin, Len) ->
     case gen_tcp:recv(Sock, 0) of
-        {ok, Pkt} ->
-        NewBin = << Bin/binary, Pkt/binary >>,
-        case (catch binary_to_term(NewBin)) of
+    {ok, Pkt} ->
+        {NewLen, NewBin} =
+            if Bin =:= <<>> ->
+                << L:32, PayLoad/binary >> = Pkt,
+                LenBytes = << L:32 >>,
+                ?Info(" term size ~p~n", [LenBytes]),
+                {L, PayLoad};
+            true -> {Len, <<Bin/binary, Pkt/binary>>}
+        end,
+        case {byte_size(NewBin), NewLen} of
+        {NewLen, NewLen} ->
+            case (catch binary_to_term(NewBin)) of
             {'EXIT', _Reason} ->
-                ?Debug("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
-                recv_sync({tcp, Sock}, NewBin);
+                ?Error("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
+                recv_sync({tcp, Sock}, NewBin, NewLen);
             {error, Exception} ->
                 ?Error("~p throw ~p", [?MODULE, Exception]),
                 throw({{error, Exception}, erlang:get_stacktrace()});
             Term ->
                 ?Debug("TCP ___RX___ ~p", [Term]),
                 Term
+            end;
+        _ ->
+            ?Info(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(NewBin), NewLen]),
+            recv_sync({tcp, Sock}, NewBin, NewLen)
         end;
     {error, Reason} ->
         ?Error("~p tcp error ~p", [?MODULE, Reason]),

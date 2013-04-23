@@ -15,7 +15,7 @@
     seco = undefined,
     event_pids=[],
     pending,
-    buf = <<>>,
+    buf = {0, <<>>},
     maxrows
 }).
 
@@ -81,10 +81,10 @@ init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
                     {local, _} -> undefined;
                     _ ->
                         erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
-                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>),
+                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
                         ?Info("authenticated ~p -> ~p", [{User, PswdMD5}, S]),
                         erlimem_cmds:exec(undefined, {login,S}, Connect),
-                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>),
+                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
                         ?Info("logged in ~p", [{User, S}]),
                         case Connect of
                             {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
@@ -191,7 +191,8 @@ handle_cast({gui_req, StmtRef, Cmd, Param, ReplyFun}, #state{idle_timer=Timer,st
     ?Debug("~p in statements ~p", [StmtRef, Stmts]),
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #drvstmt{fsm=StmtFsm}} -> StmtFsm:gui_req(Cmd, Param, ReplyFun);
-        false -> ok
+        false ->
+            ?Error("~p in statements ~p not found!", [StmtRef, Stmts])
     end,
     NewTimer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
     {noreply, State#state{idle_timer=NewTimer}};
@@ -202,36 +203,53 @@ handle_cast(Request, State) ->
 %
 % tcp
 %
-handle_info({tcp,S,Pkt}, #state{buf=Buf}=State) ->
+handle_info({tcp,S,Pkt}, #state{buf={Len,Buf}}=State) ->
     ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
     inet:setopts(S,[{active,once}]),
-    NewBin = << Buf/binary, Pkt/binary >>,
-    ?Debug("RX ~p + ~p = ~p byte of term", [byte_size(Buf), byte_size(Pkt), byte_size(NewBin)]),
-    case (catch binary_to_term(NewBin)) of
-        {'EXIT', _Reason} ->
-            ?Debug("RX ~p byte of term, waiting...", [byte_size(NewBin)]),
-            {noreply, State#state{buf=NewBin}};
-        {From, {error, Exception}} ->
-            ?Error("throw ~p to ~p", [Exception, From]),
-            gen_server:reply(From,  {error, Exception}),
-            {noreply, State#state{buf= <<>>}};
-        {From, Term} ->
-            {noreply, NewState} = case Term of
-                {ok, #stmtResult{}} = Resp ->
-                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    handle_info({From,Resp}, State);
-                {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    handle_info({From,{StmtRef,{Rows,Completed}}}, State);
-                _ ->
-                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    gen_server:reply(From, Term),
-                    {noreply, State}
-            end,
-            TSize = byte_size(term_to_binary({From, Term})),
-            RestSize = byte_size(NewBin)-TSize,
-            Rest = binary_part(NewBin, {TSize, RestSize}),
-            handle_info({tcp,S,Rest}, NewState#state{buf= <<>>})
+    {NewLen, NewBin} =
+        if Buf =:= <<>> ->
+            << L:32, PayLoad/binary >> = Pkt,
+            LenBytes = << L:32 >>,
+            ?Debug(" term size ~p~n", [LenBytes]),
+            {L, PayLoad};
+        true -> {Len, <<Buf/binary, Pkt/binary>>}
+    end,
+    case {byte_size(NewBin), NewLen} of
+        {NewLen, NewLen} ->
+            ?Debug("RX ~p + ~p = ~p byte of term", [byte_size(Buf), byte_size(Pkt), byte_size(NewBin)]),
+            case (catch binary_to_term(NewBin)) of
+                {'EXIT', _Reason} ->
+                    ?Error(" [MALFORMED] RX ~p byte of term, waiting...", [byte_size(NewBin)]),
+                    {noreply, State#state{buf={NewLen, NewBin}}};
+                {From, {error, Exception}} ->
+                    ?Error("throw ~p to ~p", [Exception, From]),
+                    gen_server:reply(From,  {error, Exception}),
+                    {noreply, State#state{buf={0, <<>>}}};
+                {From, Term} ->
+                    {noreply, NewState} = case Term of
+                        {ok, #stmtResult{}} = Resp ->
+                            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                            handle_info({From,Resp}, State);
+                        {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                            handle_info({From,{StmtRef,{Rows,Completed}}}, State);
+                        _ ->
+                            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                            gen_server:reply(From, Term),
+                            {noreply, State}
+                    end,
+                    TSize = byte_size(term_to_binary({From, Term})),
+                    RestSize = byte_size(NewBin)-TSize,
+                    Rest = binary_part(NewBin, {TSize, RestSize}),
+                    if RestSize =:= 0 ->
+                        {noreply, NewState#state{buf={0, <<>>}}};
+                    true ->
+                        handle_info({tcp,S,Rest}, NewState#state{buf={0, <<>>}})
+                    end
+            end;
+        _ ->
+            ?Info(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(NewBin), NewLen]),
+            {noreply, State#state{buf={NewLen, NewBin}}}
     end;
 handle_info({tcp_closed,Socket}, State) ->
     ?Info("~p tcp closed ~p", [self(), Socket]),
