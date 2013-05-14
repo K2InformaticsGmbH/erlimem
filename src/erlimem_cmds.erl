@@ -47,6 +47,9 @@ exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
 
 recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
+        {_, {error, Exception}} ->
+            ?Error("~p throw ~p", [?MODULE, Exception]),
+            throw({{error, Exception}, erlang:get_stacktrace()});
         Data ->
             ?Debug("LOCAL ___RX___ ~p", [Data]),
             Data
