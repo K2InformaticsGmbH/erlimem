@@ -1616,7 +1616,7 @@ data_update_row({_,ins,Fields}, ColCount, #state{nav=ind,tableId=TableId,rawCnt=
     {[[Id,ins|lists:nthtail(3, RowAsList)]],State0#state{rawCnt=RawCnt+1,rawBot=Id,guiCnt=GuiCnt+1,dirtyTop=min(DT0,Id),dirtyBot=Id,dirtyCnt=DC0+1}}.
 
 ins_tuple(Fields,ColCount) ->
-    ins_tuple(Fields,ColCount,erlang:make_tuple(ColCount,[])).
+    ins_tuple(Fields,ColCount,erlang:make_tuple(ColCount, <<>>)).
 
 ins_tuple([],_,Tuple) -> Tuple;
 ins_tuple([{Cp,Value}|Fields],ColCount,Tuple) when is_integer(Cp) ->
