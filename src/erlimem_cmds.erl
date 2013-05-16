@@ -71,6 +71,9 @@ recv_sync({tcp, Sock}, Bin, Len) ->
             {'EXIT', _Reason} ->
                 ?Error("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
                 recv_sync({tcp, Sock}, NewBin, NewLen);
+            {_, {error, Exception}} ->
+                ?Error("~p throw ~p", [?MODULE, Exception]),
+                throw({{error, Exception}, erlang:get_stacktrace()});
             {error, Exception} ->
                 ?Error("~p throw ~p", [?MODULE, Exception]),
                 throw({{error, Exception}, erlang:get_stacktrace()});

@@ -68,37 +68,20 @@ call(Pid, Msg) ->
     ?Debug("call ~p ~p", [Pid, Msg]),
     gen_server:call(Pid, Msg, ?IMEM_TIMEOUT).
 
-init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
+init([Type, Opts, {User, Pswd}]) ->
+    init([Type, Opts, {User, Pswd, undefined}]);
+init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) ->
     ?Debug("connecting with ~p cred ~p", [{Type, Opts}, {User, Pswd}]),
-    PswdMD5 = case io_lib:printable_unicode_list(binary_to_list(Pswd)) of
-        true -> erlang:md5(Pswd);
-        false -> Pswd
-    end,
     case connect(Type, Opts) of
         {ok, Connect, Schema} ->
             try
-                SeCo =  case Connect of
-                    {local, _} -> undefined;
-                    _ ->
-                        erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
-                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
-                        ?Info("authenticated ~p -> ~p", [{User, PswdMD5}, S]),
-                        erlimem_cmds:exec(undefined, {login,S}, Connect),
-                        {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
-                        ?Info("logged in ~p", [{User, S}]),
-                        case Connect of
-                            {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
-                            _ -> ok
-                        end,
-                        S
-                end,
-                ?Info("started ~p connected to ~p", [self(), {Type, Opts}]),
+                SeCo = get_seco(User, Connect, Pswd, NewPswd),
+                ?Info("started ~p connected to ~p", [self(), {User, Type, Opts}]),
                 Timer = erlang:send_after(?SESSION_TIMEOUT, self(), timeout),
                 {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, idle_timer=Timer, seco=SeCo}}
             catch
             _Class:{Result,ST} ->
-                ?Error("erlimem connect error ~p", [Result]),
-                ?Debug("erlimem connect error stackstrace ~p", [ST]),
+                ?Error("erlimem connect error, result: ~p~n, stacktrace: ~p", [Result, ST]),
                 case Connect of
                     {tcp, Sock} -> gen_tcp:close(Sock);
                     _ -> ok
@@ -106,9 +89,56 @@ init([Type, Opts, {User, Pswd}]) when is_binary(User), is_binary(Pswd) ->
                 {stop, Result}
             end;
         {error, Reason} ->
-            ?Error("erlimem connect error ~p", [Reason]),
+            ?Error("erlimem connect error, reason: ~p", [Reason]),
             {stop, Reason}
     end.
+
+get_seco(_, {local, _}, _, _) -> undefined;
+get_seco(User, Connect, Pswd, undefined) ->
+    ?Debug("New Password is undefined"),
+    S = authenticate_user(User, Connect, Pswd),
+    erlimem_cmds:exec(undefined, {login,S}, Connect),
+    {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
+    ?Debug("logged in ~p", [{User, S}]),
+    case Connect of
+        {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+        _ -> ok
+    end,
+    S;
+get_seco(User, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
+    S = authenticate_user(User, Connect, Pswd),
+    NewSeco = change_password(S, Connect, Pswd, NewPswd),
+    ?Debug("password changed ~p", [{User, NewSeco}]),
+    case Connect of
+        {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+        _ -> ok
+    end,
+    NewSeco.
+
+ensure_md5_password(Pswd) ->
+    case io_lib:printable_unicode_list(binary_to_list(Pswd)) of
+        true -> erlang:md5(Pswd);
+        false -> Pswd
+    end.
+
+authenticate_user(User, Connect, Pswd) ->
+    PswdMD5 = ensure_md5_password(Pswd),
+    erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
+    {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
+    ?Info("authenticated ~p -> ~p", [User, S]),
+    S.
+
+change_password(S, Connect, Pswd, NewPswd) ->
+    ?Debug("Changing password, params: ~p", [{S, Connect, Pswd, NewPswd}]),
+    PswdMD5 = ensure_md5_password(Pswd),
+    NewPswdMD5 = ensure_md5_password(NewPswd),
+    erlimem_cmds:exec(undefined, {change_credentials, S, {pwdmd5, PswdMD5}, {pwdmd5, NewPswdMD5}}, Connect),
+    {undefined, NewSeco} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
+    case NewSeco of
+        S -> ok;
+        _ -> logout(S, Connect)
+    end,
+    NewSeco.
 
 connect(tcp, {IpAddr, Port, Schema}) ->
     {ok, Ip} = inet:getaddr(IpAddr, inet),
@@ -123,6 +153,9 @@ connect(rpc, {Node, Schema}) when Node == node() -> connect(local_sec, {Schema})
 connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
 connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
+
+logout(S, Connect) ->
+    erlimem_cmds:exec(undefined, {login,S}, Connect).
 
 handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};
