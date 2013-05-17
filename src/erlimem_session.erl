@@ -236,54 +236,19 @@ handle_cast(Request, State) ->
 %
 % tcp
 %
+handle_info({tcp, S, <<L:32, PayLoad/binary>> = Pkt}, #state{buf={0, <<>>}} = State) ->
+    ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
+    inet:setopts(S,[{active,once}]),
+    ?Debug( " term size ~p~n", [L]),
+    {NewLen, NewBin, Commands} = split_packages(L, PayLoad),
+    NewState = process_commands(Commands, State),
+    {noreply, NewState#state{buf={NewLen, NewBin}}};
 handle_info({tcp,S,Pkt}, #state{buf={Len,Buf}}=State) ->
     ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
     inet:setopts(S,[{active,once}]),
-    {NewLen, NewBin} =
-        if Buf =:= <<>> ->
-            << L:32, PayLoad/binary >> = Pkt,
-            LenBytes = << L:32 >>,
-            ?Debug(" term size ~p~n", [LenBytes]),
-            {L, PayLoad};
-        true -> {Len, <<Buf/binary, Pkt/binary>>}
-    end,
-    case {byte_size(NewBin), NewLen} of
-        {NewLen, NewLen} ->
-            ?Debug("RX ~p + ~p = ~p byte of term", [byte_size(Buf), byte_size(Pkt), byte_size(NewBin)]),
-            case (catch binary_to_term(NewBin)) of
-                {'EXIT', _Reason} ->
-                    ?Error(" [MALFORMED] RX ~p byte of term, waiting...", [byte_size(NewBin)]),
-                    {noreply, State#state{buf={NewLen, NewBin}}};
-                {From, {error, Exception}} ->
-                    ?Error("throw ~p to ~p", [Exception, From]),
-                    gen_server:reply(From,  {error, Exception}),
-                    {noreply, State#state{buf={0, <<>>}}};
-                {From, Term} ->
-                    {noreply, NewState} = case Term of
-                        {ok, #stmtResult{}} = Resp ->
-                            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                            handle_info({From,Resp}, State);
-                        {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                            handle_info({From,{StmtRef,{Rows,Completed}}}, State);
-                        _ ->
-                            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                            gen_server:reply(From, Term),
-                            {noreply, State}
-                    end,
-                    TSize = byte_size(term_to_binary({From, Term})),
-                    RestSize = byte_size(NewBin)-TSize,
-                    Rest = binary_part(NewBin, {TSize, RestSize}),
-                    if RestSize =:= 0 ->
-                        {noreply, NewState#state{buf={0, <<>>}}};
-                    true ->
-                        handle_info({tcp,S,Rest}, NewState#state{buf={0, <<>>}})
-                    end
-            end;
-        _ ->
-            ?Info(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(NewBin), NewLen]),
-            {noreply, State#state{buf={NewLen, NewBin}}}
-    end;
+    {NewLen, NewBin, Commands} = split_packages(Len, <<Buf/binary, Pkt/binary>>),
+    NewState = process_commands(Commands, State),
+    {noreply, NewState#state{buf={NewLen, NewBin}}};
 handle_info({tcp_closed,Socket}, State) ->
     ?Info("~p tcp closed ~p", [self(), Socket]),
     {stop,normal,State};
@@ -403,3 +368,52 @@ terminate(Reason, #state{conn_param={Type, Opts},idle_timer=Timer,stmts=Stmts}) 
     ?Debug("stopped ~p config ~p for ~p", [self(), {Type, Opts}, Reason]).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
+
+%% TCP Helpers %%
+split_packages(0, <<>>) -> {0, <<>>, []};
+split_packages(Len, Payload) when Len > byte_size(Payload) ->
+    ?Debug(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(Payload), Len]),
+    {Len, Payload, []};
+split_packages(Len, Payload) when Len =:= byte_size(Payload) ->
+    {0, <<>>, [Payload]};
+split_packages(Len, Payload) ->
+    <<Command:Len/binary, Rest/binary>> = Payload,
+    if
+        byte_size(Rest) < 4 ->
+            ?Debug(" [INCOMPLETE] ~p received header ~p of 4 bytes buffering...", [self(), byte_size(Rest)]),
+            {0, Rest, [Command]};
+        true ->
+            <<NewLen:32, NewPayload/binary>> = Rest,
+            {ResultLen, ResultPayload, Commands} = split_packages(NewLen, NewPayload),
+            {ResultLen, ResultPayload, [Command|Commands]}
+    end.
+
+process_commands([], State) -> State;
+process_commands([<<>>|Rest], State) -> process_commands(Rest, State);
+process_commands([Command|Rest], State) ->
+    ?Debug("RX ~p = bytes of term", [byte_size(Command)]),
+    NewState = case (catch binary_to_term(Command)) of
+        {'EXIT', _Reason} ->
+            ?Error(" [MALFORMED] RX ~p byte of term, ignoring command ~p ...", [byte_size(Command)]),
+            State;
+        {From, {error, Exception}} ->
+            ?Error("throw ~p to ~p", [Exception, From]),
+            gen_server:reply(From,  {error, Exception}),
+            State;
+        {From, Term} ->
+            case Term of
+                {ok, #stmtResult{}} = Resp ->
+                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                    {noreply, ResultState} = handle_info({From,Resp}, State),
+                    ResultState;
+                {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
+                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                    {noreply, ResultState} = handle_info({From,{StmtRef,{Rows,Completed}}}, State),
+                    ResultState;
+                _ ->
+                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+                    gen_server:reply(From, Term),
+                    State
+            end
+    end,
+    process_commands(Rest, NewState).
