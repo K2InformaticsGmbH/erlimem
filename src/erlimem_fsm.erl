@@ -1687,11 +1687,14 @@ data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],G
     data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt,GuiTop,GuiBot);
 data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,[{Id,NK}|ChangedKeys],GuiCnt,GuiTop,GuiBot) ->
     [OldRow] = ets:lookup(TableId,Id),
-    ets:delete(IndexId,?IndKey(OldRow,SortFun)),
+    case(element(2,OldRow)) of
+        ins -> ok;
+        _ -> ets:delete(IndexId,?IndKey(OldRow,SortFun))
+    end,
     NewRow = raw_row_expand({Id,nop,NK}, RowFun),
     ets:insert(TableId,NewRow),
     case FilterFun(NewRow) of
-        true ->     
+        true ->
             NewKey = ?IndKey(NewRow,SortFun),
             ets:insert(IndexId,{NewKey,Id}),
             data_commit_ind(TableId,IndexId,RowFun,SortFun,FilterFun,ChangedKeys,GuiCnt+1,min(GuiTop,NewKey),max(GuiBot,NewKey));
