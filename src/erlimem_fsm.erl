@@ -101,6 +101,7 @@
 
 -define(block_size,10).
 -define(MustCommit,<<"Please commit or rollback changes before clearing data">>).
+-define(MustCommitSort,<<"Please commit or rollback changes before sorting or filtering data">>).
 -define(UnknownCommand,<<"Unknown command">>).
 -define(NoPendingUpdates,<<"No pending changes">>).
 
@@ -771,13 +772,21 @@ handle_event({button, <<"rollback">>, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_rollback(SN, State1),
     {next_state, SN, State2#state{tailLock=true}};
-handle_event({filter, FilterSpec, ReplyTo}, SN, State0) ->
+handle_event({filter, FilterSpec, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_filter(SN, FilterSpec, State1),
     {next_state, SN, State2#state{tailLock=true}};
-handle_event({sort, GuiSortSpec, ReplyTo}, SN, State0) ->
+handle_event({filter, _FilterSpec, ReplyTo}, SN, State0) ->
+    State1 = reply_stack(SN, ReplyTo, State0),
+    State2 = gui_nop(#gres{state=SN,beep=true,message= ?MustCommitSort},State1),
+    {next_state, SN, State2#state{tailLock=true}};
+handle_event({sort, GuiSortSpec, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_sort(SN, GuiSortSpec, State1),
+    {next_state, SN, State2#state{tailLock=true}};
+handle_event({sort, _GuiSortSpec, ReplyTo}, SN, State0) ->
+    State1 = reply_stack(SN, ReplyTo, State0),
+    State2 = gui_nop(#gres{state=SN,beep=true,message= ?MustCommitSort},State1),
     {next_state, SN, State2#state{tailLock=true}};
 handle_event({button, <<"close">>, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(SN, ReplyTo, State0),
