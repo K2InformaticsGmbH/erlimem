@@ -1,6 +1,6 @@
 {application, erlimem,
  [
-  {description, "An Erlang IMEM DB client driver"},
+  {description, "IMEM DB client driver"},
   {vsn, git},
   {registered, []},
   {applications, [
