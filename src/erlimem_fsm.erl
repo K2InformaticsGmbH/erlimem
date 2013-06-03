@@ -15,7 +15,7 @@
 -define(IndKey(__R,__SortFun),{__SortFun(element(3,__R)),element(1,__R)}).
 -define(NoKey,{}).      %% placeholder for unavailable key tuple within RowKey tuple
 
--define(TAIL_TIMEOUT, 30000). %% 30 Seconds.
+-define(TAIL_TIMEOUT, 10000). %% 10 Seconds.
 
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
@@ -100,6 +100,7 @@
                 , replyToFun          %% reply fun
                 , sql = <<"">>        %% sql string
                 , tRef = undefined    %% ref to the timer that triggers the timeout to when tailing and there is no data
+                , colOrder = []       %% order of columns, list of column indices, [] = as defined in SQL
                 }).
 
 -define(block_size,10).
@@ -222,25 +223,25 @@ fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{drvSessPid=DrvSessPid}}=State) ->
     ?Debug("fetch_close -- ~p", [Result]),
     State#state{pfc=0}.
 
-filter_and_sort(FilterSpec, SortSpec, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
-    case gen_server:call(DrvSessPid, [filter_and_sort, StmtRef, FilterSpec, SortSpec]) of
-        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, FilterSpec, SortSpec)
-        %% driver session maps to imem_meta:filter_and_sort(Pid, FilterSpec, SortSpec)
+filter_and_sort(FilterSpec, SortSpec, Cols, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
+    case gen_server:call(DrvSessPid, [filter_and_sort, StmtRef, FilterSpec, SortSpec, Cols]) of
+        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, FilterSpec, SortSpec, Cols)
+        %% driver session maps to imem_meta:filter_and_sort(Pid, FilterSpec, SortSpec, Cols)
         {ok, NewSql, NewSortFun} ->
-            ?Debug("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, {ok, NewSql, NewSortFun}]),
+            ?Debug("filter_and_sort(~p, ~p, ~p) -> ~p", [FilterSpec, SortSpec, Cols, {ok, NewSql, NewSortFun}]),
             {ok, NewSql, NewSortFun}; 
         {_, Error} -> 
-            ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Error]),
+            ?Error("filter_and_sort(~p, ~p, ~p) -> ~p", [FilterSpec, SortSpec, Cols, Error]),
             {error, Error};
         Else ->
-            ?Error("filter_and_sort(~p, ~p) -> ~p", [FilterSpec, SortSpec, Else]),
+            ?Error("filter_and_sort(~p, ~p, ~p) -> ~p", [FilterSpec, SortSpec, Cols, Else]),
             {error, Else}            
     end.
 
 update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
     case gen_server:call(DrvSessPid, [update_cursor_prepare, StmtRef, ChangeList]) of
-        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, ChangeList)
-        %% driver session maps to imem_meta:filter_and_sort(Pid, ChangeList)
+        %% driver session maps to imem_sec:update_cursor_prepare()
+        %% driver session maps to imem_meta:update_cursor_prepare()
         ok ->
             ?Debug("update_cursor_prepare(~p) -> ~p", [ChangeList, ok]); 
         {_, Error} -> 
@@ -250,8 +251,8 @@ update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtR
 
 update_cursor_execute(Lock, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
     case gen_server:call(DrvSessPid, [update_cursor_execute, StmtRef, Lock]) of
-        %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, Lock)
-        %% driver session maps to imem_meta:filter_and_sort(Pid, Lock)
+        %% driver session maps to imem_sec:update_cursor_execute()
+        %% driver session maps to imem_meta:update_cursor_execute()
         {_, Error} -> 
             ?Error("update_cursor_execute(~p) -> ~p", [Lock,Error]),
             {error, Error};
@@ -363,9 +364,14 @@ filter_or(R,[{Col,Values}|Conditions]) ->
 reply_stack(_SN,ReplyTo, #state{stack=undefined}=State0) ->
     % stack is empty, nothing to do    
     State0#state{replyToFun=ReplyTo};
-reply_stack(SN,ReplyTo, #state{stack={button,_Button,RT}}=State0) ->
+reply_stack(SN,ReplyTo, #state{stack={button,_Button,RT},tRef=undefined}=State0) ->
     % stack is obsolete, overriden by new command, reply delayed request with nop    
     State1 = gui_nop(#gres{state=SN},State0#state{stack=undefined,replyToFun=RT}),
+    State1#state{replyToFun=ReplyTo};
+reply_stack(SN,ReplyTo, #state{stack={button,_Button,RT},tRef=TRef}=State0) ->
+    % stack is obsolete, overriden by new command, reply delayed request with nop
+    timer:cancel(TRef),    
+    State1 = gui_nop(#gres{state=SN},State0#state{stack=undefined,replyToFun=RT,tRef=undefined}),
     State1#state{replyToFun=ReplyTo}.
 
 %% --------------------------------------------------------------------
@@ -586,11 +592,10 @@ tailing({button, <<">|...">>, ReplyTo}, State0) ->
     State1 = reply_stack(tailing, ReplyTo, State0),
     State2 = serve_bot(tailing, <<"tail">>, State1),
     {next_state, tailing, State2#state{tailLock=false}};
-tailing({button, <<"tail">>, ReplyTo}=Cmd, #state{tRef=TRef,tailLock=false,bufBot=BufBot,guiBot=GuiBot}=State0) when GuiBot==BufBot ->
-    timer:cancel(TRef),
+tailing({button, <<"tail">>, ReplyTo}=Cmd, #state{tailLock=false,bufBot=BufBot,guiBot=GuiBot}=State0) when GuiBot==BufBot ->
     State1 = reply_stack(tailing, ReplyTo, State0),
     ?Debug("tailing stack 'tail'"),
-    {ok, NewTRef} = timer:send_after(?TAIL_TIMEOUT, tail_timeout),
+    {ok, NewTRef} = timer:send_after(?TAIL_TIMEOUT, cmd_stack_timeout),
     {next_state, tailing, State1#state{stack=Cmd, tRef=NewTRef}};
 tailing({button, <<"tail">>, ReplyTo}, #state{tailLock=false}=State0) ->
     % continue tailing
@@ -777,6 +782,10 @@ handle_event({button, <<"rollback">>, ReplyTo}, SN, State0) ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_rollback(SN, State1),
     {next_state, SN, State2#state{tailLock=true}};
+handle_event({reorder, ColOrder, ReplyTo}, SN, State0) ->
+    State1 = reply_stack(SN, ReplyTo, State0),
+    State2 = data_reorder(SN, ColOrder, State1),
+    {next_state, SN, State2};
 handle_event({filter, FilterSpec, ReplyTo}, SN, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(SN, ReplyTo, State0),
     State2 = data_filter(SN, FilterSpec, State1),
@@ -834,10 +843,10 @@ handle_info({_Pid,{Rows,Completed}}, SN, State) ->
     Fsm = {?MODULE,self()},
     Fsm:rows({Rows,Completed}),
     {next_state, SN, State, infinity};
-handle_info(tail_timeout, tailing, #state{stack={button, <<"tail">>, RT}}=State) ->
+handle_info(cmd_stack_timeout, tailing, #state{stack={button, <<"tail">>, RT}}=State) ->
     % we didn't get any new data to send, so we reply with nop.
     ?Debug("Tail timeout, replying with nop"),
-    State1 = gui_nop(#gres{state=tailing, loop= <<"tail">>, focus=-1},State#state{stack=undefined,replyToFun=RT}),
+    State1 = gui_nop(#gres{state=tailing, loop= <<"tail">>, focus=-1},State#state{stack=undefined,replyToFun=RT,tRef=undefined}),
     {next_state, tailing, State1, infinity};
 handle_info(Unknown, SN, State) ->
     ?Info("unknown handle info ~p", [Unknown]),
@@ -1512,32 +1521,57 @@ data_append(SN, {Recs,_Complete},#state{nav=ind,tableId=TableId,indexId=IndexId
                                     )
                 ).
 
+data_reorder(SN,ColOrder,#state{sortSpec=SortSpec,filterSpec=FilterSpec}=State0) ->
+    ?Debug("data_sort ~p data_filter ~p col_order ~p", [SortSpec,FilterSpec,ColOrder]),
+    State1 = State0#state{colOrder=ColOrder},
+    case filter_and_sort(FilterSpec, SortSpec, ColOrder, State0) of
+        {ok, NewSql, _} ->
+            gui_nop(#gres{state=SN}, State1#state{sql=list_to_binary(NewSql)});
+        {error, _Error} ->
+            gui_nop(#gres{state=SN,beep=true}, State1)
+    end.    
+
 data_filter(SN,?NoFilter,#state{nav=raw}=State0) ->
     %% No filter in place
     ?Debug("data_filter ~p", [?NoFilter]),
     gui_nop(#gres{state=SN,beep=true}, State0);
-data_filter(SN,?NoFilter,#state{nav=ind,srt=false}=State0) ->
+data_filter(SN,?NoFilter,#state{nav=ind,srt=false,colOrder=ColOrder}=State0) ->
     %% No sort in place, clear index table and go to raw navigation
-    ?Debug("data_filter ~p", [?NoFilter]),
+    ?Debug("data_sort ~p data_filter ~p col_order ~p", [?NoSort,?NoFilter,ColOrder]),
     State1 = gui_clear(ind_clear(State0#state{nav=raw})),
-    serve_top(SN, State1);
-data_filter(SN,FilterSpec,#state{sortFun=SortFun}=State0) ->
-    ?Debug("data_filter ~p", [FilterSpec]),
+    case filter_and_sort(?NoFilter, ?NoSort, ColOrder, State0) of
+        {ok, NewSql, _} ->
+            serve_top(SN, State1#state{sql=list_to_binary(NewSql)});
+        {error, _Error} ->
+            serve_top(SN, State1)
+    end;
+data_filter(SN,FilterSpec,#state{sortSpec=SortSpec,sortFun=SortFun,colOrder=ColOrder}=State0) ->
+    ?Debug("data_sort ~p data_filter ~p col_order ~p", [SortSpec,FilterSpec,ColOrder]),
     State1 = data_index(SortFun,FilterSpec,State0),
-    serve_top(SN, State1).
+    case filter_and_sort(FilterSpec, SortSpec, ColOrder, State0) of
+        {ok, NewSql, _} ->
+            serve_top(SN, State1#state{sql=list_to_binary(NewSql)});
+        {error, _Error} ->
+            serve_top(SN, State1)
+    end.    
 
 data_sort(SN,?NoSort,#state{srt=false}=State0) ->
     %% No sort in place
     ?Debug("data_sort ~p", [?NoSort]),
     gui_nop(#gres{state=SN,beep=true}, State0);
-data_sort(SN,?NoSort,#state{filterSpec=?NoFilter}=State0) ->
+data_sort(SN,?NoSort,#state{filterSpec=?NoFilter,colOrder=ColOrder}=State0) ->
     %% No filter in place, clear index table and go to raw navigation
-    ?Debug("data_sort ~p data_filter ~p", [?NoSort,?NoFilter]),
+    ?Debug("data_sort ~p data_filter ~p col_order ~p", [?NoSort,?NoFilter,ColOrder]),
     State1 = gui_clear(ind_clear(State0#state{nav=raw,srt=false})),
-    serve_top(SN, State1);
-data_sort(SN,SortSpec,#state{filterSpec=FilterSpec}=State0) ->
-    ?Debug("data_sort ~p data_filter ~p", [SortSpec,FilterSpec]),
-    case filter_and_sort(FilterSpec, SortSpec, State0) of
+    case filter_and_sort(?NoFilter, ?NoSort, ColOrder, State0) of
+        {ok, NewSql, _} ->
+            serve_top(SN, State1#state{sql=list_to_binary(NewSql)});
+        {error, _Error} ->
+            serve_top(SN, State1)
+    end;    
+data_sort(SN,SortSpec,#state{filterSpec=FilterSpec,colOrder=ColOrder}=State0) ->
+    ?Debug("data_sort ~p data_filter ~p col_order ~p", [SortSpec,FilterSpec,ColOrder]),
+    case filter_and_sort(FilterSpec, SortSpec, ColOrder, State0) of
         {ok, NewSql, NewSortFun} ->
             ?Debug("data_sort NewSql=~p NewSortFun=~p", [NewSql,NewSortFun]),
             State1 = data_index(NewSortFun,FilterSpec,State0),

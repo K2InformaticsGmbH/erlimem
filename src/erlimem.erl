@@ -79,11 +79,9 @@ setup_con() ->
     ?LOG("|                CONNECTION SETUP TESTS                     |"),
     ?LOG("+-----------------------------------------------------------+"),
     application:set_env(imem, mnesia_node_type, ram),
-    application:start(imem),
-    erlimem:start().
+    application:start(imem). 
 
 teardown_con(_) ->
-    erlimem:stop(),
     application:stop(imem),
     ?LOG("+===========================================================+").
 
@@ -187,7 +185,6 @@ setup(Type) ->
     end,
     application:set_env(imem, mnesia_node_type, ram),
     application:start(imem),
-    erlimem:start(),
     ?Debug("TEST schema ~p", [Schema]),
     case Type of
         tcp         -> erlimem:open(tcp, {localhost, 8124, Schema}, Cred);
@@ -199,13 +196,11 @@ setup() ->
     ?LOG("+-----------------------------------------------------------+"),
     ?LOG("|                 TABLE MODIFICATION TESTS                  |"),
     ?LOG("+-----------------------------------------------------------+"),
-    erlimem:start(),
     random:seed(erlang:now()),
     setup(tcp).
 
 teardown(_Sess) ->
    % Sess:close(),
-    erlimem:stop(),
     application:stop(imem),
     ?LOG("+===========================================================+").
 
