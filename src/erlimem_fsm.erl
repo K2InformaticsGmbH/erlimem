@@ -15,6 +15,8 @@
 -define(IndKey(__R,__SortFun),{__SortFun(element(3,__R)),element(1,__R)}).
 -define(NoKey,{}).      %% placeholder for unavailable key tuple within RowKey tuple
 
+-define(TAIL_TIMEOUT, 30000). %% 30 Seconds.
+
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
 
@@ -97,6 +99,7 @@
                 , stack = undefined   %% command stack {button,Button,ReplyTo}
                 , replyToFun          %% reply fun
                 , sql = <<"">>        %% sql string
+                , tRef = undefined    %% ref to the timer that triggers the timeout to when tailing and there is no data
                 }).
 
 -define(block_size,10).
@@ -583,10 +586,12 @@ tailing({button, <<">|...">>, ReplyTo}, State0) ->
     State1 = reply_stack(tailing, ReplyTo, State0),
     State2 = serve_bot(tailing, <<"tail">>, State1),
     {next_state, tailing, State2#state{tailLock=false}};
-tailing({button, <<"tail">>, ReplyTo}=Cmd, #state{tailLock=false,bufBot=BufBot,guiBot=GuiBot}=State0) when GuiBot==BufBot ->
+tailing({button, <<"tail">>, ReplyTo}=Cmd, #state{tRef=TRef,tailLock=false,bufBot=BufBot,guiBot=GuiBot}=State0) when GuiBot==BufBot ->
+    timer:cancel(TRef),
     State1 = reply_stack(tailing, ReplyTo, State0),
-    % ?Debug("tailing stack 'tail'"),
-    {next_state, tailing, State1#state{stack=Cmd}};
+    ?Debug("tailing stack 'tail'"),
+    {ok, NewTRef} = timer:send_after(?TAIL_TIMEOUT, tail_timeout),
+    {next_state, tailing, State1#state{stack=Cmd, tRef=NewTRef}};
 tailing({button, <<"tail">>, ReplyTo}, #state{tailLock=false}=State0) ->
     % continue tailing
     % ?Debug("tailing button in state ~n~p", [tailing]),
@@ -829,6 +834,11 @@ handle_info({_Pid,{Rows,Completed}}, SN, State) ->
     Fsm = {?MODULE,self()},
     Fsm:rows({Rows,Completed}),
     {next_state, SN, State, infinity};
+handle_info(tail_timeout, tailing, #state{stack={button, <<"tail">>, RT}}=State) ->
+    % we didn't get any new data to send, so we reply with nop.
+    ?Debug("Tail timeout, replying with nop"),
+    State1 = gui_nop(#gres{state=tailing, loop= <<"tail">>, focus=-1},State#state{stack=undefined,replyToFun=RT}),
+    {next_state, tailing, State1, infinity};
 handle_info(Unknown, SN, State) ->
     ?Info("unknown handle info ~p", [Unknown]),
     {next_state, SN, State, infinity}.
