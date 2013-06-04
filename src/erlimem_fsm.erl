@@ -1270,6 +1270,9 @@ serve_bot(SN, Loop, #state{nav=Nav,bl=BL,gl=GL,bufCnt=BufCnt,bufBot=BufBot,guiCn
             gui_replace_until(BufBot,BL,#gres{state=SN,loop=Loop,focus=-1},State0)
     end.
 
+serve_stack(SN, #state{tRef=TRef} = State) when TRef =/= undefined ->
+    timer:cancel(TRef),
+    serve_stack(SN, State#state{tRef = undefined});
 serve_stack( _, #state{stack=undefined}=State) -> 
     % no stack, nothing .. do
     State;
