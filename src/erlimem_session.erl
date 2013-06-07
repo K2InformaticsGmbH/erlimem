@@ -335,12 +335,28 @@ handle_info({From,Resp}, #state{stmts=Stmts,maxrows=MaxRows}=State) ->
                 gen_server:reply(From,  {error, Exception}),
                 {noreply, State};
             {ok, #stmtResult{ stmtCols = Columns
-                            , rowFun   = Fun
+                            , rowFun   = RowFun
                             , stmtRef  = StmtRef
-                            , sortSpec = SortSpec} = SRslt} when is_function(Fun) ->
+                            , sortFun  = SortFun
+                            , sortSpec = SortSpec} = SRslt} ->
                 if SortSpec =/= [] -> ?Info("sort_spec ~p", [SortSpec]); true -> ok end,
                 ?Debug("RX ~p", [SRslt]),
-                {_,StmtFsmPid} = StmtFsm = erlimem_fsm:start_link(SRslt, "what is it?", MaxRows),
+                Self = self(),
+                {_,StmtFsmPid} = StmtFsm = erlimem_fsm:start_link(
+                    #fsmctx{ id                         = "what is it?"
+                           , stmtColsLen                = length(Columns)
+                           , rowFun                     = RowFun
+                           , sortFun                    = SortFun
+                           , sortSpec                   = SortSpec
+                           , block_length               = MaxRows
+                           , fetch_recs_async_fun       = fun(Opts) -> gen_server:call(Self, [fetch_recs_async, Opts, StmtRef]) end
+                           , fetch_close_fun            = fun() -> gen_server:call(Self, [fetch_close, StmtRef]) end
+                           , filter_and_sort_fun        = fun(FilterSpec, SrtSpec, Cols) ->
+                                                                gen_server:call(Self, [filter_and_sort, StmtRef, FilterSpec, SrtSpec, Cols])
+                                                            end
+                           , update_cursor_prepare_fun  = fun(ChangeList) -> gen_server:call(Self, [update_cursor_prepare, StmtRef, ChangeList]) end
+                           , update_cursor_execute_fun  = fun(Lock) -> gen_server:call(Self, [update_cursor_execute, StmtRef, Lock]) end
+                           }),
                 % monitoring StmtFsmPid
                 erlang:monitor(process, StmtFsmPid),
                 NStmts = lists:keystore(StmtRef, 1, Stmts,
