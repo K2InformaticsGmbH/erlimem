@@ -1114,6 +1114,8 @@ serve_fwd(SN,#state{nav=Nav,bl=BL,bufCnt=BufCnt,bufBot=BufBot,guiCnt=GuiCnt,guiB
             serve_bot(SN,<<>>,State0);
         (GuiBot == BufBot) andalso (SN == aborted) ->
             serve_bot(SN,<<>>,State0);
+        (GuiBot == BufBot) andalso (SN == tailing) ->
+            serve_bot(SN,<<>>,State0);
         (GuiBot == BufBot) ->
             %% index view is at end of buffer, prefetch and defer answer
             State1 = prefetch(SN,State0),
