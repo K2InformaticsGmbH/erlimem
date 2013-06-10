@@ -18,3 +18,18 @@
 -define(Error(__F),         ?LOG(?LOG_TAG, err,  [], "{~p,~4..0B} "++__F, [?MODULE,?LINE])).
 
 -define(NoRefSqlRegEx, "^(?i)(CREATE|INSERT|UPDATE|DELETE|DROP)").
+
+-record(fsmctx, { % fsm interface
+                  id
+                , stmtColsLen
+                , rowFun
+                , sortFun
+                , sortSpec
+                , block_length
+                , fetch_recs_async_fun
+                , fetch_close_fun
+                , filter_and_sort_fun
+                , update_cursor_prepare_fun
+                , update_cursor_execute_fun
+                }).
+

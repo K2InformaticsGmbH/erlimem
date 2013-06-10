@@ -1,9 +1,15 @@
 -module(erlimem_fsm).
 -behaviour(gen_fsm).
 
+%% --------------------------------------------------------------------
+%% Include files
+%% --------------------------------------------------------------------
+
 -include("erlimem.hrl").
 -include("gres.hrl").
--include_lib("imem/include/imem_sql.hrl").
+
+%% TODO driver should translate for the same effect
+-define(NoFilter,{undefined,[]}).   %% defn copied from imem_sql.hrl $$$
 
 -define(RawMax,99999999).
 -define(RawMin,0).
@@ -20,8 +26,8 @@
 %% --------------------------------------------------------------------
 %% erlimem_fsm interface
 
--export([ start/3
-        , start_link/3
+-export([ start/1
+        , start_link/1
         , stop/1
         ]).
 
@@ -48,13 +54,16 @@
 -record(ctx,    { %% session context
                   id
                 , bl                  %% block length -> State
-                , stmtRef             %% statement reference
-                , stmtCols            %% statement columns
+                , stmtColsLen         %% number of statement columns
                 , rowFun              %% RowFun -> State
                 , sortFun             %% SortFun -> State
                 , sortSpec            %% SortSpec [{Ti1,Ci1'asc'}..{TiN,CiN,'desc'}]
                 , replyToFun          %% reply fun
-                , drvSessPid          %% pid of erlimem_session spawned this fsm
+                , fetch_recs_async_fun
+                , fetch_close_fun
+                , filter_and_sort_fun
+                , update_cursor_prepare_fun
+                , update_cursor_execute_fun
                 }).
 
 -record(state,  { %% fsm combined state
@@ -63,8 +72,7 @@
                 , indexId             %% ets index table id 
                 , bl                  %% block_length (passed .. init)
                 , gl                  %% gui max length (row count) = gui_max(#state.bl)
-                , stmtRef             %% statement reference
-                , stmtCols            %% statement columns
+                , stmtColsLen         %% number of statement columns
                 , rowFun              %% RowFun
                 , sortSpec            %% from imem statement, changed by gui events
                 , sortFun             %% from imem statement, follows sortSpec (calculated by imem statement)
@@ -110,11 +118,6 @@
 -define(NoPendingUpdates,<<"No pending changes">>).
 
 
-%% --------------------------------------------------------------------
-%% Include files
-%% --------------------------------------------------------------------
-
-
 %% gen_fsm callbacks
 
 -export([ empty/2
@@ -142,29 +145,40 @@
 %% External functions
 %% ====================================================================
 
-start(#stmtResult{}=StmtResult,Id,BlockLength) ->
-    Ctx = fsm_ctx(StmtResult, self(), Id, BlockLength),
+start(#fsmctx{} = FsmCtx) ->
+    Ctx = fsm_ctx(FsmCtx),
 	{ok,Pid} = gen_fsm:start(?MODULE,Ctx,[]),
     {?MODULE,Pid}.
 
-start_link(#stmtResult{}=StmtResult,Id,BlockLength) ->
-    Ctx = fsm_ctx(StmtResult, self(), Id, BlockLength), 
+start_link(#fsmctx{} = FsmCtx) ->
+    Ctx = fsm_ctx(FsmCtx),
 	{ok, Pid} = gen_fsm:start_link(?MODULE,Ctx,[]),
     {?MODULE,Pid}.
 
-fsm_ctx(#stmtResult{ stmtRef  = StmtRef
-                   , stmtCols = StmtCols
-                   , rowFun   = RowFun
-                   , sortFun  = SortFun
-                   , sortSpec = SortSpec }, DrvSessPid, Id, BL) ->
-    #ctx{ id         = Id
-        , bl         = BL
-        , stmtRef    = StmtRef
-        , stmtCols   = StmtCols
-        , rowFun     = RowFun
-        , sortFun    = SortFun
-        , sortSpec   = SortSpec
-        , drvSessPid = DrvSessPid}.
+fsm_ctx(#fsmctx{ id                         = Id
+               , stmtColsLen                = StmtColsLen
+               , rowFun                     = RowFun
+               , sortFun                    = SortFun
+               , sortSpec                   = SortSpec
+               , block_length               = BL
+               , fetch_recs_async_fun       = Fraf
+               , fetch_close_fun            = Fcf
+               , filter_and_sort_fun        = Fasf
+               , update_cursor_prepare_fun  = Ucpf
+               , update_cursor_execute_fun  = Ucef
+               }) ->
+    #ctx{ id                        = Id
+        , bl                        = BL
+        , stmtColsLen               = StmtColsLen
+        , rowFun                    = RowFun
+        , sortFun                   = SortFun
+        , sortSpec                  = SortSpec
+        , fetch_recs_async_fun      = Fraf
+        , fetch_close_fun           = Fcf
+        , filter_and_sort_fun       = Fasf
+        , update_cursor_prepare_fun = Ucpf
+        , update_cursor_execute_fun = Ucef
+        }.
 
 stop(Pid) -> 
 	gen_fsm:send_all_state_event(Pid,stop).
@@ -197,13 +211,13 @@ rows({Rows,Completed},{?MODULE,Pid}) ->
     % ?Debug("rows ~p ~p", [length(Rows), Completed]),
     gen_fsm:send_event(Pid,{rows, {Rows,Completed}}).
 
-fetch(FetchMode,TailMode, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}=State0) ->
+fetch(FetchMode,TailMode, #state{ctx = #ctx{fetch_recs_async_fun = Fraf}}=State0) ->
     Opts = case {FetchMode,TailMode} of
         {none,none} ->    [];
         {FM,none} ->      [{fetch_mode,FM}];
         {FM,TM} ->        [{fetch_mode,FM},{tail_mode,TM}]
     end,
-    case gen_server:call(DrvSessPid, [fetch_recs_async, Opts, StmtRef]) of
+    case Fraf(Opts) of
         %% driver session maps to imem_sec:fetch_recs_async(SKey, Opts, Pid, Sock)
         %% driver session maps to imem_meta:fetch_recs_async(Opts, Pid, Sock)
         ok -> 
@@ -218,13 +232,13 @@ prefetch(filling,#state{pfc=0}=State) ->  fetch(none,none,State);
 prefetch(filling,State) ->                State;
 prefetch(_,State) ->                      State.
 
-fetch_close(#state{stmtRef=StmtRef,ctx = #ctx{drvSessPid=DrvSessPid}}=State) ->
-    Result = gen_server:call(DrvSessPid, [fetch_close, StmtRef]),
+fetch_close(#state{ctx = #ctx{fetch_close_fun = Fcf}}=State) ->
+    Result = Fcf(),
     ?Debug("fetch_close -- ~p", [Result]),
     State#state{pfc=0}.
 
-filter_and_sort(FilterSpec, SortSpec, Cols, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
-    case gen_server:call(DrvSessPid, [filter_and_sort, StmtRef, FilterSpec, SortSpec, Cols]) of
+filter_and_sort(FilterSpec, SortSpec, Cols, #state{ctx = #ctx{filter_and_sort_fun = Fasf}}) ->
+    case Fasf(FilterSpec, SortSpec, Cols) of
         %% driver session maps to imem_sec:filter_and_sort(SKey, Pid, FilterSpec, SortSpec, Cols)
         %% driver session maps to imem_meta:filter_and_sort(Pid, FilterSpec, SortSpec, Cols)
         {ok, NewSql, NewSortFun} ->
@@ -238,8 +252,8 @@ filter_and_sort(FilterSpec, SortSpec, Cols, #state{ctx = #ctx{drvSessPid=DrvSess
             {error, Else}            
     end.
 
-update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
-    case gen_server:call(DrvSessPid, [update_cursor_prepare, StmtRef, ChangeList]) of
+update_cursor_prepare(ChangeList, #state{ctx = #ctx{update_cursor_prepare_fun = Ucpf}}) ->
+    case Ucpf(ChangeList) of
         %% driver session maps to imem_sec:update_cursor_prepare()
         %% driver session maps to imem_meta:update_cursor_prepare()
         ok ->
@@ -249,8 +263,8 @@ update_cursor_prepare(ChangeList, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtR
             {error, Error}
     end.
 
-update_cursor_execute(Lock, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=StmtRef}) ->
-    case gen_server:call(DrvSessPid, [update_cursor_execute, StmtRef, Lock]) of
+update_cursor_execute(Lock, #state{ctx = #ctx{update_cursor_execute_fun = Ucef}}) ->
+    case Ucef(Lock) of
         %% driver session maps to imem_sec:update_cursor_execute()
         %% driver session maps to imem_meta:update_cursor_execute()
         {_, Error} -> 
@@ -273,24 +287,26 @@ update_cursor_execute(Lock, #state{ctx = #ctx{drvSessPid=DrvSessPid},stmtRef=Stm
 %%          {stop, StopReason}
 %% --------------------------------------------------------------------
 
-init(#ctx{bl=BL,replyToFun=ReplyTo
-         , stmtRef=StmtRef,stmtCols=StmtCols
-         , rowFun=RowFun,sortFun=SortFun
-         , sortSpec=SortSpec}=Ctx) ->
+init(#ctx{ bl                           = BL
+         , replyToFun                   = ReplyTo
+         , stmtColsLen                  = StmtColsLen
+         , rowFun                       = RowFun
+         , sortFun                      = SortFun
+         , sortSpec                     = SortSpec
+         }=Ctx) ->
     TableId=ets:new(raw, [ordered_set]),        %% {Id,Op,Keys,Col1,Col2,...Coln}
     IndexId=ets:new(ind, [ordered_set]),        %% {{SortFun(Keys),Id},Id}
     FilterSpec = ?NoFilter, 
-    State0=#state{ bl           = BL
-                 , gl           = gui_max(BL)
-                 , ctx          = Ctx
-                 , tableId      = TableId
-                 , indexId      = IndexId
-                 , stmtRef      = StmtRef
-                 , stmtCols     = StmtCols
-                 , rowFun       = RowFun
-                 , sortFun      = SortFun
-                 , sortSpec     = SortSpec
-                 , replyToFun   = ReplyTo
+    State0=#state{ bl                           = BL
+                 , gl                           = gui_max(BL)
+                 , ctx                          = Ctx
+                 , tableId                      = TableId
+                 , indexId                      = IndexId
+                 , stmtColsLen                  = StmtColsLen
+                 , rowFun                       = RowFun
+                 , sortFun                      = SortFun
+                 , sortSpec                     = SortSpec
+                 , replyToFun                   = ReplyTo
                  },
     State1 = data_index(SortFun,FilterSpec,State0),           
     {ok, empty, reset_buf_counters(State1)}.
@@ -1618,8 +1634,8 @@ data_index(SortFun,FilterSpec, #state{tableId=TableId,indexId=IndexId,rowFun=Row
         ,indCnt=IndCnt,indTop=IndTop,indBot=IndBot}).
 
 
-data_update(SN,ChangeList,#state{stmtCols=StmtCols}=State0) ->
-    {State1,InsRows} = data_update_rows(ChangeList,length(StmtCols),State0,[]),
+data_update(SN,ChangeList,#state{stmtColsLen=StmtColsLen}=State0) ->
+    {State1,InsRows} = data_update_rows(ChangeList,StmtColsLen,State0,[]),
     ?Debug("InsRows ~p",[InsRows]),
     gui_ins(#gres{state=SN,rows=InsRows}, State1).
 
