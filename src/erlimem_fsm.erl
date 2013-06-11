@@ -419,14 +419,14 @@ empty(Other, State) ->
 filling({button, <<"restart">>, ReplyTo}, #state{bl=BL,guiTop=GuiTop,guiCol=true}=State0) ->
     State1 = reply_stack(filling, ReplyTo, State0),
     State2 = gui_replace_from(GuiTop,BL,#gres{state=filling,focus=1},State1),
-    {next_state, filling, State2};
+    {next_state, filling, State2#state{tailMode=false}};
 filling({button, <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(filling, ReplyTo, State0),
     State2 = fetch_close(State1),
     State3 = data_clear(State2),
     State4 = fetch(none,none,State3),
     State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
-    {next_state, filling, State5};
+    {next_state, filling, State5#state{tailMode=false}};
 filling({button, <<"restart">>, ReplyTo}, State0) ->
     % reject command because of uncommitted changes
     State1 = gui_nop(#gres{state=filling,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
@@ -512,14 +512,14 @@ filling(Other, State) ->
 autofilling({button, <<"restart">>, ReplyTo}, #state{bl=BL,guiTop=GuiTop,guiCol=true}=State0) ->
     State1 = reply_stack(autofilling, ReplyTo, State0),
     State2 = gui_replace_from(GuiTop,BL,#gres{state=autofilling,focus=1},State1),
-    {next_state, filling, State2};
+    {next_state, filling, State2#state{tailMode=false}};
 autofilling({button, <<"restart">>, ReplyTo}, #state{dirtyCnt=DC,tailMode=TailMode}=State0) when DC==0 ->
     State1 = reply_stack(autofilling, ReplyTo, State0),
     State2 = fetch_close(State1),
     State3 = data_clear(State2),
     State4 = fetch(push,TailMode,State3),
     State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
-    {next_state, filling, State5};
+    {next_state, filling, State5#state{tailMode=false}};
 autofilling({button, <<"restart">>, ReplyTo}, State0) ->
     % reject command because of uncommitted changes
     State1 = gui_nop(#gres{state=autofilling,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
@@ -572,6 +572,7 @@ autofilling({rows, {Recs,true}}, #state{tailMode=false}=State0) ->
     {next_state, completed, State2#state{pfc=0}};
 autofilling({rows, {Recs,true}}, State0) ->
     % revceive and store last input from DB, switch state .. tail mode
+    ?Info("Rows received complete and tailing:~nState: ~p", [State0]),
     State1= data_append(tailing,{Recs,true},State0),
     {next_state, tailing, State1#state{pfc=0}};
 autofilling(Other, State) ->
@@ -581,14 +582,14 @@ autofilling(Other, State) ->
 tailing({button, <<"restart">>, ReplyTo}, #state{bl=BL,guiTop=GuiTop,guiCol=true}=State0) ->
     State1 = reply_stack(tailing, ReplyTo, State0),
     State2 = gui_replace_from(GuiTop,BL,#gres{state=tailing,focus=1},State1),
-    {next_state, tailing, State2};
+    {next_state, tailing, State2#state{tailMode=false}};
 tailing({button, <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(tailing, ReplyTo, State0),
     State2 = fetch_close(State1),
     State3 = data_clear(State2),
     State4 = fetch(none,true,State3),
     State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
-    {next_state, filling, State5};
+    {next_state, filling, State5#state{tailMode=false}};
 tailing({button, <<"restart">>, ReplyTo}, State0) ->
     % reject command because of uncommitted changes
     State1 = gui_nop(#gres{state=tailing,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
@@ -643,14 +644,14 @@ tailing(Other, State) ->
 completed({button, <<"restart">>, ReplyTo}, #state{bl=BL,guiTop=GuiTop,guiCol=true}=State0) ->
     State1 = reply_stack(completed, ReplyTo, State0),
     State2 = gui_replace_from(GuiTop,BL,#gres{state=completed,focus=1},State1),
-    {next_state, completed, State2};
+    {next_state, completed, State2#state{tailMode=false}};
 completed({button, <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0 ->
     State1 = reply_stack(completed, ReplyTo, State0),
     State2 = fetch_close(State1),
     State3 = data_clear(State2),
     State4 = fetch(none,false,State3),
     State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
-    {next_state, filling, State5};
+    {next_state, filling, State5#state{tailMode=false}};
 completed({button, <<"restart">>, ReplyTo}, State0) ->
     % reject command because of uncommitted changes
     State1 = gui_nop(#gres{state=completed,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
@@ -697,7 +698,7 @@ aborted({button, <<"restart">>, ReplyTo}, #state{dirtyCnt=DC}=State0) when DC==0
     State3 = data_clear(State2),
     State4 = fetch(none,false,State3),
     State5 = gui_clear(#gres{state=filling,loop= <<">">>}, State4),
-    {next_state, filling, State5};
+    {next_state, filling, State5#state{tailMode=false}};
 aborted({button, <<"restart">>, ReplyTo}, State0) ->
     % reject command because of uncommitted changes
     State1 = gui_nop(#gres{state=aborted,beep=true,message= ?MustCommit},State0#state{replyToFun=ReplyTo}),
