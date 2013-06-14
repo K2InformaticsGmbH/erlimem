@@ -1,8 +1,6 @@
 -module(erlimem).
 
 -include("erlimem.hrl").
--include("gres.hrl").
--include_lib("imem/include/imem_sql.hrl").
 -define(SESSMOD, erlimem_session).
 
 -define(LOG(_F),    io:format(user, ?T++" [TEST ~3..0B] "++_F++"~n", [?LINE])).
@@ -161,7 +159,7 @@ db_test_() ->
         fun setup/0,
         fun teardown/1,
         {with, [fun native_apis/1
-                , fun all_tables/1
+                %, fun all_tables/1
                 %, fun table_create_select_navigate_drop/1
                 %, fun table_sort_navigate/1
                 %, fun table_modify/1
@@ -222,267 +220,267 @@ native_apis({ok, Sess}) ->
                                , [{record_name, TableName},{type, ordered_set}]]),
     ?LOG("------------------------------------------------------------", []).
 
-all_tables({ok, Sess}) ->
-    ?LOG("--------- select from all_tables (all_tables) --------------"),
-    Sql = "select name(qname) from all_tables;",
-    {ok, Clms, Statement} = Sess:exec(Sql, 100),
-    ?LOG("~p ->~n ~p", [Sql, {Clms, Statement}]),
-    Statement:gui_req(button, <<">|">>, fun(GReq) ->
-        ?LOG("received ~p", [GReq#gres.rows]),
-        Statement:gui_req(button, <<"close">>, fun(_GReq) ->
-            ?LOG("statement ~p closed", [Statement])
-        end)
-    end),
-    timer:sleep(500),
-    ?LOG("------------------------------------------------------------").
-
-table_create_select_navigate_drop({ok, Sess}) ->
-    ?LOG("------- navigate (table_create_select_navigate_drop) -------", []),
-    create_table(Sess, atom_to_list(?Table)),
-    insert_range(Sess, 200, atom_to_list(?Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
-    ?LOG("select ~p", [{Clms, Statement}]),
-
-    Statement:gui_req(button, <<">">>, fun(GReq) ->
-        ?LOG("rows ~p", [GReq#gres.rows]),
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    Statement:gui_req(button, <<">">>, fun(GReq) ->
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 11}, {to, 20}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    Statement:gui_req(button, <<">>">>, fun(GReq) ->
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 31}, {to, 40}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    Statement:gui_req(button, <<"<<">>, fun(GReq) ->
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    Statement:gui_req(button, <<">">>, fun(GReq) ->
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 26}, {to, 35}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    Statement:gui_req(button, <<"|<">>, fun(GReq) ->
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    Statement:gui_req(button, 25, fun(GReq) ->
-        ?assert(length(GReq#gres.rows) > 0),
-        ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(GReq#gres.rows))
-    end),
-
-    ?LOG(">  Read rows from  1 to 10", []),
-    ?LOG(">  Read rows from 10 to 20", []),
-    ?LOG(">> Read rows from 31 to 40", []),
-    ?LOG("<< Read rows from 16 to 25", []),
-    ?LOG(">  Read rows from 26 to 35", []),
-    ?LOG("|< Read rows from  1 to 10", []),
-    ?LOG("@ 25 Read 16 row from 25", []),
-
-    Statement:gui_req(button, <<"close">>, fun(_GReq) -> ok end),
-    drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------").
-
-table_sort_navigate({ok, Sess}) ->
-    ?LOG("------- sorted table navigate (table_sort_navigate) --------", []),
-    create_table(Sess, atom_to_list(?Table)),
-    insert_range(Sess, 200, atom_to_list(?Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++" order by col2;", 10),
-    ?LOG("select ~p", [{Clms, Statement}]),
-
-    Rows = Statement:gui_req(button, <<">">>),
-    ?assert(length(Rows#gres.rows) > 0),
-    ?assertEqual([{from, 4}, {to, 3}], ?RowIdRange(Rows#gres.rows)),
-
-    Rows0 = Statement:gui_req(button, <<">">>),
-    ?assert(length(Rows0#gres.rows) > 0),
-    ?assertEqual([{from, 17}, {to, 36}], ?RowIdRange(Rows0#gres.rows)),
-
-    Rows1 = Statement:gui_req(button, <<">>">>),
-    ?assert(length(Rows#gres.rows) > 0),
-    ?assertEqual([{from, 159}, {to, 157}], ?RowIdRange(Rows1#gres.rows)),
-
-    Rows2 = Statement:gui_req(button, <<"<<">>),
-    ?assert(length(Rows2#gres.rows) > 0),
-    ?assertEqual([{from, 89}, {to, 154}], ?RowIdRange(Rows2#gres.rows)),
-
-    Rows3 = Statement:gui_req(button, <<">">>),
-    ?assert(length(Rows3#gres.rows) > 0),
-    ?assertEqual([{from, 181}, {to, 179}], ?RowIdRange(Rows3#gres.rows)),
-
-    Rows4 = Statement:gui_req(button, <<"|<">>),
-    ?assert(length(Rows4#gres.rows) > 0),
-    ?assertEqual([{from, 136}, {to, 72}], ?RowIdRange(Rows4#gres.rows)),
-
-    Rows5 = Statement:gui_req(button, 25),
-    ?assert(length(Rows5#gres.rows) > 0),
-    ?assertEqual([{from, 94}, {to, 44}], ?RowIdRange(Rows5#gres.rows)),
-
-    ?LOG(">  Read rows from   4 to 3", []),
-    ?LOG(">  Read rows from  17 to 36", []),
-    ?LOG(">> Read rows from 159 to 157", []),
-    ?LOG("<< Read rows from  89 to 154", []),
-    ?LOG(">  Read rows from 181 to 179", []),
-    ?LOG("|< Read rows from 136 to 72", []),
-    ?LOG("@ 25 Read 94 row from 44", []),
-
-    Statement:gui_req(button, <<"close">>),
-    drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------").
-
-table_modify({ok, Sess}) ->
-    ?LOG("------- update insert new delete rows (table_modify) -------"),
-    erlimem:loglevel(info),
-    create_table(Sess, atom_to_list(?Table)),
-    NumRows = 10,
-    Res = [Sess:exec("insert into " ++ atom_to_list(?Table) ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');")
-          || N <- lists:seq(1,NumRows)],
-    ?assertEqual(Res, lists:duplicate(NumRows, ok)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
-    ?LOG("select ~p", [{Clms, Statement}]),
-
-    Rows = Statement:gui_req(button, <<">|">>),
-    ?assert(length(Rows#gres.rows) > 0),
-    ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows#gres.rows)),
-    ?LOG("original table from db ~p", [Rows#gres.rows]),
-
-    %% % modify some rows in buffer
-    %% Statement:update_rows([["4",1,4],
-    %%                        ["6",10,6],
-    %%                        ["8",2,8],
-    %%                        ["5",9,5],
-    %%                        ["3",4,3]]),
-    %% % delete some rows in buffer
-    %% Statement:delete_rows([["2",6,"6"],
-    %%                        ["3",4,"4"],
-    %%                        ["4",1,"1"],
-    %%                        ["5",9,"9"],
-    %%                        ["6",10,"10"],
-    %%                        ["7",8,"8"],
-    %%                        ["8",2,"2"],
-    %%                        ["9",3,"3"]]),
-
-    %% % insert some rows in buffer
-    %% Statement:insert_rows([[11,11],
-    %%                        [12,12]]),
-
-    %% ok = Statement:prepare_update(),
-    %% ok = Statement:execute_update(),
-    %% ok = Statement:fetch_close(),
-    %% ?LOG("changed rows!", []),
-
-    %% Statement:start_async_read([]),
-    %% timer:sleep(100),
-    %% {NewRows1,_,_} = Statement:next_rows(),
-    %% ?assertEqual([["1","7","7"],
-    %%               ["2","11","11"],
-    %%               ["3","5","5"],
-    %%               ["4","12","12"]], NewRows1),
-    %% ?LOG("modified table from db ~p", [NewRows1]),
-
-    Statement:gui_req(button, <<"close">>),
-    drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------").
-
-simul_insert({ok, Sess}) ->
-    ?LOG("------------ simultaneous insert (simul_insert) ------------", []),
-    create_table(Sess, atom_to_list(?Table)),
-    insert_range(Sess, 21, atom_to_list(?Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
-    ?LOG("select ~p", [{Clms, Statement}]),
-
-    Rows = Statement:gui_req(button, <<">">>),
-    ?LOG("received ~p", [Rows#gres.rows]),
-
-    ?LOG("receiving async...", []),
-    insert_async(Sess, 20, atom_to_list(?Table)),
-    ExtraRows = recv_delay(Statement, <<">">>, 10, []),
-    ?LOG("received ~p", [ExtraRows]),
-
-    Statement:gui_req(button, <<"close">>),
-    drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------").
-
-table_tail({ok, Sess}) ->
-    ?LOG("-------------- fetch async tail (table_tail) ---------------", []),
-    create_table(Sess, atom_to_list(?Table)),
-    insert_range(Sess, 16, atom_to_list(?Table)),
-    {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 5),
-    ?LOG("select ~p", [{Clms, Statement}]),
-
-    Rows = Statement:gui_req(button, <<">">>),
-    Rows0 = Statement:gui_req(button, <<">|...">>),
-
-    [{from, Frm}, {to, To}] = ?RowIdRange(Rows#gres.rows),
-    ?LOG(">     Read rows from ~p to ~p", [Frm, To]),
-    [{from, Frm0}, {to, To0}] = ?RowIdRange(Rows0#gres.rows),
-    ?LOG(">|... Read rows from ~p to ~p", [Frm0, To0]),
-
-    ?LOG("receiving async...", []),
-    insert_async(Sess, 20, atom_to_list(?Table)),
-    AsyncRows = recv_delay(Statement, Rows0#gres.loop, 10, []),
-
-    [[Frm1|_]|_] = AsyncRows,
-    [To1|_] = lists:last(AsyncRows),
-    ?LOG("received async from ~p to ~p", [Frm1, To1]),
-    ?assertEqual(20, length(AsyncRows)),
-
-    Statement:gui_req(button, <<"close">>),
-    drop_table(Sess, atom_to_list(?Table)),
-    ?LOG("------------------------------------------------------------").
-
-create_table(Sess, TableName) ->
-    Sql = "create table "++TableName++" (
-                     col2 integer,
-                     col1 varchar2(10)
-          );",
-    Res = Sess:exec(Sql),
-    ?LOG("~p -> ~p", [Sql, Res]).
-
-drop_table(Sess, TableName) ->
-    Res = Sess:exec("drop table "++TableName++";"),
-    ?LOG("drop table -> ~p", [Res]).
-
-recv_delay(_, _, 0, Rows) -> Rows;
-recv_delay(Statement, Btn, Count, Rows) ->
-    timer:sleep(50),
-    if byte_size(Btn) > 0 ->
-        Rs = Statement:gui_req(button, Btn),
-        if Rs#gres.rows =/= [] ->
-            [{from, Frm}, {to, To}] = ?RowIdRange(Rs#gres.rows),
-            ?LOG("loop ~p read from ~p to ~p", [list_to_atom(binary_to_list(Btn)), Frm, To]);
-        true -> ok end,
-        if Rs#gres.loop =/= undefined ->
-            recv_delay(Statement, Rs#gres.loop, Count-1, Rows ++ Rs#gres.rows);
-            true -> if Btn =/= undefined ->
-                        recv_delay(Statement, Btn, Count-1, Rows ++ Rs#gres.rows);
-                        true -> Rows
-                    end
-        end;
-    true -> Rows
-    end.
-
-insert_async(Sess, N, TableName) ->
-    F =
-    fun
-        (_, 0) -> ok;
-        (F, Count) ->
-            timer:sleep(11),
-            Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(Count) ++ ", '" ++ integer_to_list(Count) ++ "');",
-            Res = Sess:exec(Sql),
-            ?LOG("~p -> ~p", [Sql, Res]),
-            F(F,Count-1)
-    end,
-    spawn(fun()-> F(F,N) end).
-
+% - all_tables({ok, Sess}) ->
+% -     ?LOG("--------- select from all_tables (all_tables) --------------"),
+% -     Sql = "select name(qname) from all_tables;",
+% -     {ok, Clms, Statement} = Sess:exec(Sql, 100),
+% -     ?LOG("~p ->~n ~p", [Sql, {Clms, Statement}]),
+% -     Statement:gui_req(button, <<">|">>, fun(GReq) ->
+% -         ?LOG("received ~p", [GReq#gres.rows]),
+% -         Statement:gui_req(button, <<"close">>, fun(_GReq) ->
+% -             ?LOG("statement ~p closed", [Statement])
+% -         end)
+% -     end),
+% -     timer:sleep(500),
+% -     ?LOG("------------------------------------------------------------").
+% - 
+% - table_create_select_navigate_drop({ok, Sess}) ->
+% -     ?LOG("------- navigate (table_create_select_navigate_drop) -------", []),
+% -     create_table(Sess, atom_to_list(?Table)),
+% -     insert_range(Sess, 200, atom_to_list(?Table)),
+% -     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
+% -     ?LOG("select ~p", [{Clms, Statement}]),
+% - 
+% -     Statement:gui_req(button, <<">">>, fun(GReq) ->
+% -         ?LOG("rows ~p", [GReq#gres.rows]),
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     Statement:gui_req(button, <<">">>, fun(GReq) ->
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 11}, {to, 20}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     Statement:gui_req(button, <<">>">>, fun(GReq) ->
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 31}, {to, 40}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     Statement:gui_req(button, <<"<<">>, fun(GReq) ->
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     Statement:gui_req(button, <<">">>, fun(GReq) ->
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 26}, {to, 35}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     Statement:gui_req(button, <<"|<">>, fun(GReq) ->
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     Statement:gui_req(button, 25, fun(GReq) ->
+% -         ?assert(length(GReq#gres.rows) > 0),
+% -         ?assertEqual([{from, 16}, {to, 25}], ?RowIdRange(GReq#gres.rows))
+% -     end),
+% - 
+% -     ?LOG(">  Read rows from  1 to 10", []),
+% -     ?LOG(">  Read rows from 10 to 20", []),
+% -     ?LOG(">> Read rows from 31 to 40", []),
+% -     ?LOG("<< Read rows from 16 to 25", []),
+% -     ?LOG(">  Read rows from 26 to 35", []),
+% -     ?LOG("|< Read rows from  1 to 10", []),
+% -     ?LOG("@ 25 Read 16 row from 25", []),
+% - 
+% -     Statement:gui_req(button, <<"close">>, fun(_GReq) -> ok end),
+% -     drop_table(Sess, atom_to_list(?Table)),
+% -     ?LOG("------------------------------------------------------------").
+% - 
+% - table_sort_navigate({ok, Sess}) ->
+% -     ?LOG("------- sorted table navigate (table_sort_navigate) --------", []),
+% -     create_table(Sess, atom_to_list(?Table)),
+% -     insert_range(Sess, 200, atom_to_list(?Table)),
+% -     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++" order by col2;", 10),
+% -     ?LOG("select ~p", [{Clms, Statement}]),
+% - 
+% -     Rows = Statement:gui_req(button, <<">">>),
+% -     ?assert(length(Rows#gres.rows) > 0),
+% -     ?assertEqual([{from, 4}, {to, 3}], ?RowIdRange(Rows#gres.rows)),
+% - 
+% -     Rows0 = Statement:gui_req(button, <<">">>),
+% -     ?assert(length(Rows0#gres.rows) > 0),
+% -     ?assertEqual([{from, 17}, {to, 36}], ?RowIdRange(Rows0#gres.rows)),
+% - 
+% -     Rows1 = Statement:gui_req(button, <<">>">>),
+% -     ?assert(length(Rows#gres.rows) > 0),
+% -     ?assertEqual([{from, 159}, {to, 157}], ?RowIdRange(Rows1#gres.rows)),
+% - 
+% -     Rows2 = Statement:gui_req(button, <<"<<">>),
+% -     ?assert(length(Rows2#gres.rows) > 0),
+% -     ?assertEqual([{from, 89}, {to, 154}], ?RowIdRange(Rows2#gres.rows)),
+% - 
+% -     Rows3 = Statement:gui_req(button, <<">">>),
+% -     ?assert(length(Rows3#gres.rows) > 0),
+% -     ?assertEqual([{from, 181}, {to, 179}], ?RowIdRange(Rows3#gres.rows)),
+% - 
+% -     Rows4 = Statement:gui_req(button, <<"|<">>),
+% -     ?assert(length(Rows4#gres.rows) > 0),
+% -     ?assertEqual([{from, 136}, {to, 72}], ?RowIdRange(Rows4#gres.rows)),
+% - 
+% -     Rows5 = Statement:gui_req(button, 25),
+% -     ?assert(length(Rows5#gres.rows) > 0),
+% -     ?assertEqual([{from, 94}, {to, 44}], ?RowIdRange(Rows5#gres.rows)),
+% - 
+% -     ?LOG(">  Read rows from   4 to 3", []),
+% -     ?LOG(">  Read rows from  17 to 36", []),
+% -     ?LOG(">> Read rows from 159 to 157", []),
+% -     ?LOG("<< Read rows from  89 to 154", []),
+% -     ?LOG(">  Read rows from 181 to 179", []),
+% -     ?LOG("|< Read rows from 136 to 72", []),
+% -     ?LOG("@ 25 Read 94 row from 44", []),
+% - 
+% -     Statement:gui_req(button, <<"close">>),
+% -     drop_table(Sess, atom_to_list(?Table)),
+% -     ?LOG("------------------------------------------------------------").
+% - 
+% - table_modify({ok, Sess}) ->
+% -     ?LOG("------- update insert new delete rows (table_modify) -------"),
+% -     erlimem:loglevel(info),
+% -     create_table(Sess, atom_to_list(?Table)),
+% -     NumRows = 10,
+% -     Res = [Sess:exec("insert into " ++ atom_to_list(?Table) ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');")
+% -           || N <- lists:seq(1,NumRows)],
+% -     ?assertEqual(Res, lists:duplicate(NumRows, ok)),
+% -     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 100),
+% -     ?LOG("select ~p", [{Clms, Statement}]),
+% - 
+% -     Rows = Statement:gui_req(button, <<">|">>),
+% -     ?assert(length(Rows#gres.rows) > 0),
+% -     ?assertEqual([{from, 1}, {to, 10}], ?RowIdRange(Rows#gres.rows)),
+% -     ?LOG("original table from db ~p", [Rows#gres.rows]),
+% - 
+% -     %% % modify some rows in buffer
+% -     %% Statement:update_rows([["4",1,4],
+% -     %%                        ["6",10,6],
+% -     %%                        ["8",2,8],
+% -     %%                        ["5",9,5],
+% -     %%                        ["3",4,3]]),
+% -     %% % delete some rows in buffer
+% -     %% Statement:delete_rows([["2",6,"6"],
+% -     %%                        ["3",4,"4"],
+% -     %%                        ["4",1,"1"],
+% -     %%                        ["5",9,"9"],
+% -     %%                        ["6",10,"10"],
+% -     %%                        ["7",8,"8"],
+% -     %%                        ["8",2,"2"],
+% -     %%                        ["9",3,"3"]]),
+% - 
+% -     %% % insert some rows in buffer
+% -     %% Statement:insert_rows([[11,11],
+% -     %%                        [12,12]]),
+% - 
+% -     %% ok = Statement:prepare_update(),
+% -     %% ok = Statement:execute_update(),
+% -     %% ok = Statement:fetch_close(),
+% -     %% ?LOG("changed rows!", []),
+% - 
+% -     %% Statement:start_async_read([]),
+% -     %% timer:sleep(100),
+% -     %% {NewRows1,_,_} = Statement:next_rows(),
+% -     %% ?assertEqual([["1","7","7"],
+% -     %%               ["2","11","11"],
+% -     %%               ["3","5","5"],
+% -     %%               ["4","12","12"]], NewRows1),
+% -     %% ?LOG("modified table from db ~p", [NewRows1]),
+% - 
+% -     Statement:gui_req(button, <<"close">>),
+% -     drop_table(Sess, atom_to_list(?Table)),
+% -     ?LOG("------------------------------------------------------------").
+% - 
+% - simul_insert({ok, Sess}) ->
+% -     ?LOG("------------ simultaneous insert (simul_insert) ------------", []),
+% -     create_table(Sess, atom_to_list(?Table)),
+% -     insert_range(Sess, 21, atom_to_list(?Table)),
+% -     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 10),
+% -     ?LOG("select ~p", [{Clms, Statement}]),
+% - 
+% -     Rows = Statement:gui_req(button, <<">">>),
+% -     ?LOG("received ~p", [Rows#gres.rows]),
+% - 
+% -     ?LOG("receiving async...", []),
+% -     insert_async(Sess, 20, atom_to_list(?Table)),
+% -     ExtraRows = recv_delay(Statement, <<">">>, 10, []),
+% -     ?LOG("received ~p", [ExtraRows]),
+% - 
+% -     Statement:gui_req(button, <<"close">>),
+% -     drop_table(Sess, atom_to_list(?Table)),
+% -     ?LOG("------------------------------------------------------------").
+% - 
+% - table_tail({ok, Sess}) ->
+% -     ?LOG("-------------- fetch async tail (table_tail) ---------------", []),
+% -     create_table(Sess, atom_to_list(?Table)),
+% -     insert_range(Sess, 16, atom_to_list(?Table)),
+% -     {ok, Clms, Statement} = Sess:exec("select * from "++atom_to_list(?Table)++";", 5),
+% -     ?LOG("select ~p", [{Clms, Statement}]),
+% - 
+% -     Rows = Statement:gui_req(button, <<">">>),
+% -     Rows0 = Statement:gui_req(button, <<">|...">>),
+% - 
+% -     [{from, Frm}, {to, To}] = ?RowIdRange(Rows#gres.rows),
+% -     ?LOG(">     Read rows from ~p to ~p", [Frm, To]),
+% -     [{from, Frm0}, {to, To0}] = ?RowIdRange(Rows0#gres.rows),
+% -     ?LOG(">|... Read rows from ~p to ~p", [Frm0, To0]),
+% - 
+% -     ?LOG("receiving async...", []),
+% -     insert_async(Sess, 20, atom_to_list(?Table)),
+% -     AsyncRows = recv_delay(Statement, Rows0#gres.loop, 10, []),
+% - 
+% -     [[Frm1|_]|_] = AsyncRows,
+% -     [To1|_] = lists:last(AsyncRows),
+% -     ?LOG("received async from ~p to ~p", [Frm1, To1]),
+% -     ?assertEqual(20, length(AsyncRows)),
+% - 
+% -     Statement:gui_req(button, <<"close">>),
+% -     drop_table(Sess, atom_to_list(?Table)),
+% -     ?LOG("------------------------------------------------------------").
+% - 
+% - create_table(Sess, TableName) ->
+% -     Sql = "create table "++TableName++" (
+% -                      col2 integer,
+% -                      col1 varchar2(10)
+% -           );",
+% -     Res = Sess:exec(Sql),
+% -     ?LOG("~p -> ~p", [Sql, Res]).
+% - 
+% - drop_table(Sess, TableName) ->
+% -     Res = Sess:exec("drop table "++TableName++";"),
+% -     ?LOG("drop table -> ~p", [Res]).
+% - 
+% - recv_delay(_, _, 0, Rows) -> Rows;
+% - recv_delay(Statement, Btn, Count, Rows) ->
+% -     timer:sleep(50),
+% -     if byte_size(Btn) > 0 ->
+% -         Rs = Statement:gui_req(button, Btn),
+% -         if Rs#gres.rows =/= [] ->
+% -             [{from, Frm}, {to, To}] = ?RowIdRange(Rs#gres.rows),
+% -             ?LOG("loop ~p read from ~p to ~p", [list_to_atom(binary_to_list(Btn)), Frm, To]);
+% -         true -> ok end,
+% -         if Rs#gres.loop =/= undefined ->
+% -             recv_delay(Statement, Rs#gres.loop, Count-1, Rows ++ Rs#gres.rows);
+% -             true -> if Btn =/= undefined ->
+% -                         recv_delay(Statement, Btn, Count-1, Rows ++ Rs#gres.rows);
+% -                         true -> Rows
+% -                     end
+% -         end;
+% -     true -> Rows
+% -     end.
+% - 
+% - insert_async(Sess, N, TableName) ->
+% -     F =
+% -     fun
+% -         (_, 0) -> ok;
+% -         (F, Count) ->
+% -             timer:sleep(11),
+% -             Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(Count) ++ ", '" ++ integer_to_list(Count) ++ "');",
+% -             Res = Sess:exec(Sql),
+% -             ?LOG("~p -> ~p", [Sql, Res]),
+% -             F(F,Count-1)
+% -     end,
+% -     spawn(fun()-> F(F,N) end).
+% - 
 %% insert_random(_, 0, Rows) -> Rows;
 %% insert_random(Max, Count, Rows) ->
 %%     Idx = Max + random:uniform(Max),
@@ -496,17 +494,17 @@ insert_async(Sess, N, TableName) ->
 %%     [I,PK,_|Rest] = lists:nth(1,B),
 %%     update_random(Max, Count-1, Rows, NewRows ++ [[I,PK,Idx|Rest]]).
 
-insert_range(S, N, T) ->
-    io:format(user, "inserting.... [", []),
-    ins_range(S, N, T).
-
-ins_range(_Sess, 0, _TableName) -> io:format(user, "]~n", []);
-ins_range(Sess, N, TableName) when is_integer(N), N > 0 ->
-    Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');",
-    _Res = Sess:exec(Sql),
-    %?LOG("~p -> ~p", [Sql, _Res]),
-    io:format(user, "~p ", [N]),
-    ins_range(Sess, N-1, TableName).
+% insert_range(S, N, T) ->
+%     io:format(user, "inserting.... [", []),
+%     ins_range(S, N, T).
+% 
+% ins_range(_Sess, 0, _TableName) -> io:format(user, "]~n", []);
+% ins_range(Sess, N, TableName) when is_integer(N), N > 0 ->
+%     Sql = "insert into " ++ TableName ++ " values (" ++ integer_to_list(N) ++ ", '" ++ integer_to_list(N) ++ "');",
+%     _Res = Sess:exec(Sql),
+%     %?LOG("~p -> ~p", [Sql, _Res]),
+%     io:format(user, "~p ", [N]),
+%     ins_range(Sess, N-1, TableName).
 %-------------------------------------------------------------------------------------------------------------------
 
 -endif.
