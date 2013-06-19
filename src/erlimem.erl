@@ -26,6 +26,7 @@ open(Type, Opts, Cred) ->
     end.
 
 % EUnit tests --
+-ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
 -define(Table, test_table_123).
@@ -507,4 +508,5 @@ native_apis({ok, Sess}) ->
 %     ins_range(Sess, N-1, TableName).
 %-------------------------------------------------------------------------------------------------------------------
 
+-endif.
 -endif.
