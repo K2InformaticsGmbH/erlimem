@@ -216,9 +216,11 @@ native_apis({ok, Sess}) ->
              , pdu
              , extra],
     DataTypes = [timestamp, atom, ipaddr, integer, ipaddr,integer, binary, term],
-    Sess:run_cmd(create_table, [TableName
+    Result = Sess:run_cmd(create_table, [TableName
                                , {Fields, DataTypes, list_to_tuple([TableName]++Fields)}
                                , [{record_name, TableName},{type, ordered_set}]]),
+    %% We are testing a error here.
+    ?assertMatch({error, _}, Result),
     ?LOG("------------------------------------------------------------", []).
 
 % - all_tables({ok, Sess}) ->
