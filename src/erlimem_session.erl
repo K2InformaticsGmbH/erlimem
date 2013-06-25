@@ -193,7 +193,8 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #stmt{fsm=StmtFsm}} ->
             case {Rows,Completed} of
-                {error, Result} ->
+                {error, Result} = Error ->
+                    StmtFsm:rows(Error),
                     ?Error([session, self()], "async_resp ~p", [Result]),
                     {noreply, State};
                 {Rows, Completed} ->
@@ -201,6 +202,7 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
                     ?Debug("~p __RX__ received rows ~p status ~p", [StmtRef, length(Rows), Completed]),
                     {noreply, State};
                 Unknown ->
+                    StmtFsm:rows(Unknown),
                     ?Error([session, self()], "async_resp unknown resp ~p", [Unknown]),
                     {noreply, State}
             end;
