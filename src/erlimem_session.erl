@@ -69,7 +69,7 @@ init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) 
                 {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo}}
             catch
             _Class:{Result,ST} ->
-                ?Error("erlimem connect error, result: ~p~n, stacktrace: ~p", [Result, ST]),
+                ?Error("erlimem connect error, result: ~n~p~nstacktrace:~n~p~n", [Result, ST]),
                 case Connect of
                     {tcp, Sock} -> gen_tcp:close(Sock);
                     _ -> ok
