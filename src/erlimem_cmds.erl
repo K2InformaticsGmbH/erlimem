@@ -48,7 +48,7 @@ exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
 recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         {_, {error, Exception}} ->
-            ?Error("~p throw exception : ~n~p~n", [?MODULE, Exception]),
+            ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
             throw({{error, Exception}, erlang:get_stacktrace()});
         Data ->
             ?Debug("LOCAL ___RX___ ~p", [Data]),
@@ -69,13 +69,13 @@ recv_sync({tcp, Sock}, Bin, Len) ->
         {NewLen, NewLen} ->
             case (catch binary_to_term(NewBin)) of
             {'EXIT', _Reason} ->
-                ?Error("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
+                ?Info("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
                 recv_sync({tcp, Sock}, NewBin, NewLen);
             {_, {error, Exception}} ->
-                ?Error("~p throw ~p", [?MODULE, Exception]),
+                ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
                 throw({{error, Exception}, erlang:get_stacktrace()});
             {error, Exception} ->
-                ?Error("~p throw ~p", [?MODULE, Exception]),
+                ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
                 throw({{error, Exception}, erlang:get_stacktrace()});
             Term ->
                 ?Debug("TCP ___RX___ ~p", [Term]),
@@ -87,6 +87,6 @@ recv_sync({tcp, Sock}, Bin, Len) ->
         end;
     {error, Reason} ->
         ?Error("~p tcp error ~p", [?MODULE, Reason]),
-        ?Debug("~p tcp error stack ~p", [?MODULE, erlang:get_stacktrace()]),
+        ?Error("~p tcp error stack :~n~p~n", [?MODULE, erlang:get_stacktrace()]),
         throw({{error, Reason}, erlang:get_stacktrace()})
     end.

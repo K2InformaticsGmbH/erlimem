@@ -77,7 +77,7 @@ init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) 
                 {stop, Result}
             end;
         {error, Reason} ->
-            ?Error("erlimem connect error, reason: ~p", [Reason]),
+            ?Error("erlimem connect error, reason:~n~p", [Reason]),
             {stop, Reason}
     end.
 
@@ -112,7 +112,7 @@ handle_call(Msg, From, #state{connection=Connection
     end,
     case (catch erlimem_cmds:exec(From, NewMsg, Connection)) of
         {{error, E}, ST} ->
-            ?Error("cmd ~p error ~p", [Cmd, E]),
+            ?Error("cmd ~p error~n~p~n", [Cmd, E]),
             ?Debug("~p", [ST]),
             {reply, E, State#state{event_pids=NewEvtPids}};
         _Result ->
@@ -195,7 +195,7 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
             case {Rows,Completed} of
                 {error, Result} = Error ->
                     StmtFsm:rows(Error),
-                    ?Error([session, self()], "async_resp ~p", [Result]),
+                    ?Error([session, self()], "async_resp~n~p~n", [Result]),
                     {noreply, State};
                 {Rows, Completed} ->
                     StmtFsm:rows({Rows,Completed}),
@@ -203,7 +203,7 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
                     {noreply, State};
                 Unknown ->
                     StmtFsm:rows(Unknown),
-                    ?Error([session, self()], "async_resp unknown resp ~p", [Unknown]),
+                    ?Error([session, self()], "async_resp unknown resp~n~p~n", [Unknown]),
                     {noreply, State}
             end;
         false ->
@@ -213,7 +213,7 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
 handle_info({From,Resp}, #state{stmts=Stmts}=State) ->
     case Resp of
             {error, Exception} ->
-                ?Error("throw ~p to ~p", [Exception, From]),
+                ?Error("to ~p throw~n~p~n", [From, Exception]),
                 gen_server:reply(From,  {error, Exception}),
                 {noreply, State};
             {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
@@ -338,7 +338,7 @@ process_commands([Command|Rest], State) ->
             ?Error(" [MALFORMED] RX ~p byte of term, ignoring command ~p ...", [byte_size(Command)]),
             State;
         {From, {error, Exception}} ->
-            ?Error("throw ~p to ~p", [Exception, From]),
+            ?Error("to ~p throw~n~p~n", [From, Exception]),
             gen_server:reply(From,  {error, Exception}),
             State;
         {From, Term} ->
