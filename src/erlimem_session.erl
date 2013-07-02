@@ -154,7 +154,7 @@ handle_info({'DOWN', Ref, process, StmtFsmPid, Reason}, #state{stmts=Stmts}=Stat
     [StmtRef|_] = [SR || {SR, DS} <- Stmts, element(2, DS#stmt.fsm) =:= StmtFsmPid],
     NewStmts = lists:keydelete(StmtRef, 1, Stmts),
     true = demonitor(Ref, [flush]),
-    ?Info("FSM ~p died with reason ~p for stmt ~p remaining ~p", [StmtFsmPid, Reason, StmtRef, [S || {S,_} <- NewStmts]]),
+    ?Debug("FSM ~p died with reason ~p for stmt ~p remaining ~p", [StmtFsmPid, Reason, StmtRef, [S || {S,_} <- NewStmts]]),
     {noreply, State#state{stmts=NewStmts}};
 
 % mnesia events handling
