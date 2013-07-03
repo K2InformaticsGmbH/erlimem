@@ -65,7 +65,7 @@ init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) 
         {ok, Connect, Schema} ->
             try
                 SeCo = get_seco(User, Connect, Pswd, NewPswd),
-                ?Info("started ~p connected to ~p", [self(), {User, Type, Opts}]),
+                ?Info("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
                 {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo}}
             catch
             _Class:{Result,ST} ->
