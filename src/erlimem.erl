@@ -11,7 +11,23 @@
 
 loglevel(L) -> application:set_env(erlimem, logging, L).
 
-start() ->  application:start(?MODULE).
+start() ->
+    ok = application:load(lager),
+    ok = application:set_env(lager, handlers, [{lager_console_backend, info},
+                                               {lager_file_backend, [{file, "log/error.log"},
+                                                                     {level, error},
+                                                                     {size, 10485760},
+                                                                     {date, "$D0"},
+                                                                     {count, 5}]},
+                                               {lager_file_backend, [{file, "log/console.log"},
+                                                                     {level, info},
+                                                                     {size, 10485760},
+                                                                     {date, "$D0"},
+                                                                     {count, 5}]}]),
+    ok = application:set_env(lager, error_logger_redirect, false),
+    ok = application:start(lager),
+    application:start(?MODULE).
+
 stop()  ->  application:stop(?MODULE).
 
 open(Type, Opts, Cred) ->
