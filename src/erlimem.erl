@@ -36,7 +36,29 @@ open(Type, Opts, Cred) ->
     _ -> ok
     end,
     case gen_server:start(?SESSMOD, [Type, Opts, Cred], []) of
-        {ok, Pid} -> {ok, {?SESSMOD, Pid}};
+        {ok, Pid} ->
+            Sess = {?SESSMOD, Pid},
+            IsCorrectVsn = case code:is_loaded(imem_datatype) of
+                {file, _} ->
+                    LocalVsn = proplists:get_value(vsn,imem_datatype:module_info(attributes)),
+                    RemoteVsn = proplists:get_value(vsn, Sess:run_cmd(admin_exec, [imem_datatype,module_info,[attributes]])),
+                    if LocalVsn =/= RemoteVsn -> false; true -> true end;
+                false -> false
+            end,
+            case IsCorrectVsn of
+                false ->
+                    try
+                        {imem_datatype,Bin,File} = Sess:run_cmd(admin_exec, [code,get_object_code,[imem_datatype]]),
+                        {module, imem_datatype} = code:load_binary(imem_datatype, File, Bin),
+                        {ok, {?SESSMOD, Pid}}
+                    catch
+                        _:Reason ->
+                            ?Info("error loading compatible version of imem_datatype ~p", [Reason]),
+                            {error, Reason}
+                    end;
+                true ->
+                    {ok, {?SESSMOD, Pid}}
+            end;
         {error, {error, Error}} -> {error, Error};
         Other -> Other
     end.
