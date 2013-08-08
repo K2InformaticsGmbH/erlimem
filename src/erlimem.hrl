@@ -1,4 +1,4 @@
--define(IMEM_TIMEOUT, 1000).
+-define(IMEM_TIMEOUT, 10000).
 -define(SESSION_TIMEOUT, 3600000).
 -define(MAX_PREFETCH_ON_FLIGHT, 5).
 
