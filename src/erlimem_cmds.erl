@@ -4,6 +4,7 @@
 
 -export([exec/3, recv_sync/3]).
 
+-spec exec(undefined | pid(), tuple(), {atom(), term()}) -> ok | {error, atom()}.
 exec(Ref, CmdTuple, {tcp, Socket}) ->
     exec_catch(Ref, Socket, undefined, imem_sec, CmdTuple);
 exec(Ref, CmdTuple, {rpc, Node}) ->
@@ -14,6 +15,7 @@ exec(Ref, CmdTuple, {local, _}) ->
     {[Cmd|_], Args} = lists:split(1, tuple_to_list(CmdTuple)),
     exec_catch(Ref, undefined, node(), imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)])).
 
+-spec exec_catch(undefined | pid(), undefined | gen_tcp:socket(), atom(), imem_sec | imem_meta, tuple()) -> ok | {error, atom()}.
 exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
     {Cmd, Args0} = lists:split(1, tuple_to_list(CmdTuple)),
     Fun = lists:nth(1, Cmd),
@@ -45,6 +47,7 @@ exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
             throw({{error, Result}, erlang:get_stacktrace()})
     end.
 
+-spec recv_sync({atom(), undefined | gen_tcp:socket()}, binary(), integer()) -> term().
 recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         {_, {error, Exception}} ->

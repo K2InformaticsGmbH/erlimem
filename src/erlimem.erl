@@ -9,8 +9,10 @@
 %% Application callbacks
 -export([start/0, stop/0, open/3, loglevel/1]).
 
+-spec loglevel(atom()) -> ok.
 loglevel(L) -> application:set_env(erlimem, logging, L).
 
+-spec start() -> ok | {error | term()}.
 start() ->
     ok = application:load(lager),
     ok = application:set_env(lager, handlers, [{lager_console_backend, info},
@@ -28,8 +30,10 @@ start() ->
     ok = application:start(lager),
     application:start(?MODULE).
 
-stop()  ->  application:stop(?MODULE).
+-spec stop() -> ok | {error, term()}.
+stop() ->  application:stop(?MODULE).
 
+-spec open(atom(), tuple(), {binary(), binary()}) -> {ok, {atom(), pid()}} | {error, term()}.
 open(Type, Opts, Cred) ->
     case lists:keymember(erlimem, 1, application:which_applications()) of
     false -> erlimem:start();

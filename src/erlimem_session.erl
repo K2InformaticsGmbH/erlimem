@@ -41,18 +41,29 @@
 %
 % interface functions
 %
-close({?MODULE, Pid})          -> gen_server:call(Pid, stop);
+
+-spec close({atom(), pid()} | {atom(), pid(), pid()}) -> ok.
+close({?MODULE, Pid}) -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
-exec(StmtStr,                                    Ctx) -> exec(StmtStr, 0, Ctx).
-exec(StmtStr, BufferSize,                        Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
-exec(StmtStr, BufferSize, Fun,                   Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
-run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
-add_stmt_fsm(StmtRef, StmtFsm,        {?MODULE, Pid}) -> gen_server:call(Pid, {add_stmt_fsm, StmtRef, StmtFsm}, ?SESSION_TIMEOUT).
+-spec exec(list(), {atom(), pid()}) -> term().
+exec(StmtStr, Ctx) -> exec(StmtStr, 0, Ctx).
 
+-spec exec(list(), integer(), {atom(), pid()}) -> term().
+exec(StmtStr, BufferSize, Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
+
+-spec exec(list(), integer(), fun(), {atom(), pid()}) -> term().
+exec(StmtStr, BufferSize, Fun, Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
+
+-spec run_cmd(atom(), list(), {atom(), pid()}) -> term().
+run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
+
+-spec add_stmt_fsm(pid(), {atom(), pid()}, {atom(), pid()}) -> ok.
+add_stmt_fsm(StmtRef, StmtFsm, {?MODULE, Pid}) -> gen_server:call(Pid, {add_stmt_fsm, StmtRef, StmtFsm}, ?SESSION_TIMEOUT).
+
+-spec get_stmts(list() | {atom(), pid()}) -> [pid()].
 get_stmts({?MODULE, Pid}) -> gen_server:call(Pid, get_stmts, ?SESSION_TIMEOUT);
 get_stmts(PidStr)         -> gen_server:call(list_to_pid(PidStr), get_stmts, ?SESSION_TIMEOUT).
-
 
 %
 % gen_server callbacks
@@ -245,6 +256,7 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 % private functions
 %
 
+-spec get_seco(binary(), {atom(), term()}, binary(), undefined | binary()) -> undefined | integer().
 get_seco(_, {local, _}, _, _) -> undefined;
 get_seco(User, Connect, Pswd, undefined) ->
     ?Debug("New Password is undefined"),
@@ -267,12 +279,14 @@ get_seco(User, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
     end,
     NewSeco.
 
+-spec ensure_md5_password(binary()) -> binary().
 ensure_md5_password(Pswd) ->
     case io_lib:printable_unicode_list(binary_to_list(Pswd)) of
         true -> erlang:md5(Pswd);
         false -> Pswd
     end.
 
+-spec authenticate_user(binary(), {atom(), term()}, binary()) -> integer().
 authenticate_user(User, Connect, Pswd) ->
     PswdMD5 = ensure_md5_password(Pswd),
     erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
@@ -280,6 +294,7 @@ authenticate_user(User, Connect, Pswd) ->
     ?Info("authenticated ~p -> ~p", [User, S]),
     S.
 
+-spec change_password(integer(), {atom(), term()}, binary(), binary()) -> integer().
 change_password(S, Connect, Pswd, NewPswd) ->
     ?Debug("Changing password, params: ~p", [{S, Connect, Pswd, NewPswd}]),
     PswdMD5 = ensure_md5_password(Pswd),
@@ -292,6 +307,7 @@ change_password(S, Connect, Pswd, NewPswd) ->
     end,
     NewSeco.
 
+-spec connect(atom(), tuple()) -> {ok, {atom(), term()}, term()} | {error, term()}.
 connect(tcp, {IpAddr, Port, Schema}) ->
     {ok, Ip} = inet:getaddr(IpAddr, inet),
     ?Info("connecting to ~p:~p", [Ip, Port]),
@@ -306,11 +322,12 @@ connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
 connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
 connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
 
+-spec logout(integer(), {atom(), term()}) -> ok | {error, atom()}.
 logout(S, Connect) ->
-    erlimem_cmds:exec(undefined, {login,S}, Connect).
-
+    erlimem_cmds:exec(undefined, {logout, S}, Connect).
 
 % tcp helpers
+-spec split_packages(integer(), binary()) -> {integer(), binary(), [binary()]}.
 split_packages(0, <<>>) -> {0, <<>>, []};
 split_packages(Len, Payload) when Len > byte_size(Payload) ->
     ?Debug(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(Payload), Len]),
@@ -329,6 +346,7 @@ split_packages(Len, Payload) ->
             {ResultLen, ResultPayload, [Command|Commands]}
     end.
 
+-spec process_commands([binary()], #state{}) -> #state{}.
 process_commands([], State) -> State;
 process_commands([<<>>|Rest], State) -> process_commands(Rest, State);
 process_commands([Command|Rest], State) ->
