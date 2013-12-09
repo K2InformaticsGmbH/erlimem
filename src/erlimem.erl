@@ -3,9 +3,6 @@
 -include("erlimem.hrl").
 -define(SESSMOD, erlimem_session).
 
--define(LOG(_F),    io:format(user, ?T++" [TEST ~3..0B] "++_F++"~n", [?LINE])).
--define(LOG(_F,_A), io:format(user, ?T++" [TEST ~3..0B] "++_F++"~n", [?LINE]++_A)).
-
 %% Application callbacks
 -export([start/0, stop/0, open/3, loglevel/1]).
 
@@ -65,6 +62,9 @@ open(Type, Opts, Cred) ->
 
 % EUnit tests --
 -ifdef(TEST).
+
+-define(LOG(_F),    io:format(user, " [TEST ~3..0B] "++_F++"~n", [?LINE])).
+-define(LOG(_F,_A), io:format(user, " [TEST ~3..0B] "++_F++"~n", [?LINE]++_A)).
 
 -include_lib("eunit/include/eunit.hrl").
 -define(Table, test_table_123).
