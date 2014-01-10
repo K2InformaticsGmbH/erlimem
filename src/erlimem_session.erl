@@ -76,7 +76,7 @@ init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) 
         {ok, Connect, Schema} ->
             try
                 SeCo = get_seco(User, Connect, Pswd, NewPswd),
-                ?Info("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
+                ?Debug("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
                 {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo}}
             catch
             _Class:{Result,ST} ->
@@ -291,7 +291,7 @@ authenticate_user(User, Connect, Pswd) ->
     PswdMD5 = ensure_md5_password(Pswd),
     erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
     {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
-    ?Info("authenticated ~p -> ~p", [User, S]),
+    ?Debug("authenticated ~p -> ~p", [User, S]),
     S.
 
 -spec change_password(integer(), {atom(), term()}, binary(), binary()) -> integer().
