@@ -11,6 +11,7 @@ loglevel(L) -> application:set_env(erlimem, logging, L).
 
 -spec start() -> ok | {error | term()}.
 start() ->
+    ok = ssl:start(),
     ok = application:load(lager),
     ok = application:set_env(lager, handlers, [{lager_console_backend, info},
                                                {lager_file_backend, [{file, "log/error.log"},
@@ -93,8 +94,8 @@ row_fun(_) ->
     ?LOG("---------- checking generated row_fun (row_fun) ------------"),
     Schema = 'Imem',
     Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
-    {_, SessLocal} = erlimem:open(tcp, {localhost, 8124, Schema}, Cred),
-    {_, SessMpro} = erlimem:open(tcp, {localhost, 8125, Schema}, Cred),
+    {_, SessLocal} = erlimem:open(tcp, {localhost, 8124, Schema, [ssl]}, Cred),
+    {_, SessMpro} = erlimem:open(tcp, {localhost, 8125, Schema, [ssl]}, Cred),
     RF = SessLocal:run_cmd(select_rowfun_str, [[#ddColMap{type=string,tind=1,cind=2}], eu, undefined, undefined]),
     RF1 = SessMpro:run_cmd(select_rowfun_str, [[#ddColMap{type=integer,tind=1,cind=2}], eu, undefined, undefined]),
     RF2 = SessMpro:run_cmd(select_rowfun_str, [[#ddColMap{type=string,tind=1,cind=3}], eu, undefined, undefined]),
@@ -224,7 +225,7 @@ setup(Type) ->
     application:start(imem),
     ?Debug("TEST schema ~p", [Schema]),
     case Type of
-        tcp         -> erlimem:open(tcp, {localhost, 8124, Schema}, Cred);
+        tcp         -> erlimem:open(tcp, {localhost, 8124, Schema, [ssl]}, Cred);
         local_sec   -> erlimem:open(local_sec, {Schema}, Cred);
         local       -> erlimem:open(local, {Schema}, Cred)
     end.

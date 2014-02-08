@@ -12,7 +12,8 @@
     conn_param,
     schema,
     seco,
-    maxrows
+    maxrows,
+    inetmod
 }).
 
 -record(stmt, {
@@ -77,12 +78,14 @@ init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) 
             try
                 SeCo = get_seco(User, Connect, Pswd, NewPswd),
                 ?Debug("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
-                {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo}}
+                InetMod = case Connect of {gen_tcp,_} -> inet; {ssl, _} -> ssl end,
+                {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo, inetmod=InetMod}}
             catch
             _Class:{Result,ST} ->
                 ?Error("erlimem connect error, result: ~n~p~nstacktrace:~n~p~n", [Result, ST]),
                 case Connect of
-                    {tcp, Sock} -> gen_tcp:close(Sock);
+                    {gen_tcp, Sock} -> gen_tcp:close(Sock);
+                    {ssl, Sock} -> ssl:close(Sock);
                     _ -> ok
                 end,
                 {stop, Result}
@@ -143,20 +146,20 @@ handle_info(timeout, State) ->
     {stop,normal,State};
 
 % tcp
-handle_info({tcp, S, <<L:32, PayLoad/binary>> = Pkt}, #state{buf={0, <<>>}} = State) ->
+handle_info({Tcp, S, <<L:32, PayLoad/binary>> = Pkt}, #state{buf={0, <<>>}, inetmod=InetMod} = State) when Tcp =:= tcp; Tcp =:= ssl ->
     ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
-    inet:setopts(S,[{active,once}]),
+    InetMod:setopts(S,[{active,once}]),
     ?Debug( " term size ~p~n", [L]),
     {NewLen, NewBin, Commands} = split_packages(L, PayLoad),
     NewState = process_commands(Commands, State),
     {noreply, NewState#state{buf={NewLen, NewBin}}};
-handle_info({tcp,S,Pkt}, #state{buf={Len,Buf}}=State) ->
+handle_info({Tcp,S,Pkt}, #state{buf={Len,Buf}, inetmod=InetMod}=State) when Tcp =:= tcp; Tcp =:= ssl ->
     ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
-    inet:setopts(S,[{active,once}]),
+    InetMod:setopts(S,[{active,once}]),
     {NewLen, NewBin, Commands} = split_packages(Len, <<Buf/binary, Pkt/binary>>),
     NewState = process_commands(Commands, State),
     {noreply, NewState#state{buf={NewLen, NewBin}}};
-handle_info({tcp_closed,Socket}, State) ->
+handle_info({TcpClosed,Socket}, State) when TcpClosed =:= tcp_closed; TcpClosed =:= ssl_closed ->
     ?Info("~p tcp closed ~p", [self(), Socket]),
     {stop,normal,State};
 
@@ -265,7 +268,8 @@ get_seco(User, Connect, Pswd, undefined) ->
     {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
     ?Debug("logged in ~p", [{User, S}]),
     case Connect of
-        {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+        {gen_tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+        {ssl,Sck}     -> ssl:setopts(Sck,[{active,once}]);
         _ -> ok
     end,
     S;
@@ -274,7 +278,8 @@ get_seco(User, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
     NewSeco = change_password(S, Connect, Pswd, NewPswd),
     ?Debug("password changed ~p", [{User, NewSeco}]),
     case Connect of
-        {tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+        {gen_tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
+        {ssl,Sck}     -> ssl:setopts(Sck,[{active,once}]);
         _ -> ok
     end,
     NewSeco.
@@ -308,13 +313,15 @@ change_password(S, Connect, Pswd, NewPswd) ->
     NewSeco.
 
 -spec connect(atom(), tuple()) -> {ok, {atom(), term()}, term()} | {error, term()}.
-connect(tcp, {IpAddr, Port, Schema}) ->
+connect(tcp, {IpAddr, Port, Schema}) -> connect(tcp, {IpAddr, Port, Schema, []});
+connect(tcp, {IpAddr, Port, Schema, Opts}) ->
+    {TcpMod, InetMod} = case lists:member(ssl, Opts) of true -> {ssl, ssl}; _ -> {gen_tcp, inet} end,
     {ok, Ip} = inet:getaddr(IpAddr, inet),
     ?Info("connecting to ~p:~p", [Ip, Port]),
-    case gen_tcp:connect(Ip, Port, []) of
+    case TcpMod:connect(Ip, Port, []) of
         {ok, Socket} ->
-            inet:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
-            {ok, {tcp, Socket}, Schema};
+            InetMod:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
+            {ok, {case lists:member(ssl, Opts) of true -> ssl; _ -> gen_tcp end, Socket}, Schema};
         {error, _} = Error -> Error
     end;
 connect(rpc, {Node, Schema}) when Node == node() -> connect(local_sec, {Schema});

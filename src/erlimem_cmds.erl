@@ -5,15 +5,17 @@
 -export([exec/3, recv_sync/3]).
 
 -spec exec(undefined | pid(), tuple(), {atom(), term()}) -> ok | {error, atom()}.
-exec(Ref, CmdTuple, {tcp, Socket}) ->
-    exec_catch(Ref, Socket, undefined, imem_sec, CmdTuple);
 exec(Ref, CmdTuple, {rpc, Node}) ->
     exec_catch(Ref, undefined, Node, imem_sec, CmdTuple);
 exec(Ref, CmdTuple, {local_sec, _}) ->
     exec_catch(Ref, undefined, node(), imem_sec, CmdTuple);
 exec(Ref, CmdTuple, {local, _}) ->
     {[Cmd|_], Args} = lists:split(1, tuple_to_list(CmdTuple)),
-    exec_catch(Ref, undefined, node(), imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)])).
+    exec_catch(Ref, undefined, node(), imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)]));
+exec(Ref, CmdTuple, {gen_tcp, Socket}) ->
+    exec_catch(Ref, {gen_tcp, Socket}, undefined, imem_sec, CmdTuple);
+exec(Ref, CmdTuple, {ssl, Socket}) ->
+    exec_catch(Ref, {ssl, Socket}, undefined, imem_sec, CmdTuple).
 
 -spec exec_catch(undefined | pid(), undefined | gen_tcp:socket(), atom(), imem_sec | imem_meta, tuple()) -> ok | {error, atom()}.
 exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
@@ -36,18 +38,18 @@ exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
                         ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
                         ok = rpc:call(Node, imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}])
                 end;
-            Socket ->
+            {Transport, Socket} ->
                 ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
                 ReqBin = term_to_binary({Ref,Mod,Fun,Args}),
                 PayloadSize = byte_size(ReqBin),
-                gen_tcp:send(Socket, << PayloadSize:32, ReqBin/binary >>)
+                Transport:send(Socket, << PayloadSize:32, ReqBin/binary >>)
         end
     catch
         _Class:Result ->
             throw({{error, Result}, erlang:get_stacktrace()})
     end.
 
--spec recv_sync({atom(), undefined | gen_tcp:socket()}, binary(), integer()) -> term().
+-spec recv_sync({atom(), undefined | gen_tcp:socket() | ssl:socket()}, binary(), integer()) -> term().
 recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         {_, {error, Exception}} ->
@@ -57,8 +59,8 @@ recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
             ?Debug("LOCAL ___RX___ ~p", [Data]),
             Data
     end;
-recv_sync({tcp, Sock}, Bin, Len) ->
-    case gen_tcp:recv(Sock, 0) of
+recv_sync({Mod, Sock}, Bin, Len) when Mod =:= ssl; Mod =:= gen_tcp ->
+    case Mod:recv(Sock, 0) of
     {ok, Pkt} ->
         {NewLen, NewBin} =
             if Bin =:= <<>> ->
@@ -73,7 +75,7 @@ recv_sync({tcp, Sock}, Bin, Len) ->
             case (catch binary_to_term(NewBin)) of
             {'EXIT', _Reason} ->
                 ?Info("~p RX ~p byte of term, waiting...", [?MODULE, byte_size(Pkt)]),
-                recv_sync({tcp, Sock}, NewBin, NewLen);
+                recv_sync({Mod, Sock}, NewBin, NewLen);
             {_, {error, Exception}} ->
                 ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
                 throw({{error, Exception}, erlang:get_stacktrace()});
@@ -86,7 +88,7 @@ recv_sync({tcp, Sock}, Bin, Len) ->
             end;
         _ ->
             ?Info(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(NewBin), NewLen]),
-            recv_sync({tcp, Sock}, NewBin, NewLen)
+            recv_sync({Mod, Sock}, NewBin, NewLen)
         end;
     {error, Reason} ->
         ?Error("~p tcp error ~p", [?MODULE, Reason]),
