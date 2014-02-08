@@ -11,8 +11,8 @@ loglevel(L) -> application:set_env(erlimem, logging, L).
 
 -spec start() -> ok | {error | term()}.
 start() ->
-    ok = ssl:start(),
-    ok = application:load(lager),
+    ssl:start(),
+    application:load(lager),
     ok = application:set_env(lager, handlers, [{lager_console_backend, info},
                                                {lager_file_backend, [{file, "log/error.log"},
                                                                      {level, error},
@@ -25,7 +25,7 @@ start() ->
                                                                      {date, "$D0"},
                                                                      {count, 5}]}]),
     ok = application:set_env(lager, error_logger_redirect, false),
-    ok = application:start(lager),
+    application:start(lager),
     application:start(?MODULE).
 
 -spec stop() -> ok | {error, term()}.

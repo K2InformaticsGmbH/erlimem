@@ -78,17 +78,17 @@ init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) 
             try
                 SeCo = get_seco(User, Connect, Pswd, NewPswd),
                 ?Debug("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
-                InetMod = case Connect of {gen_tcp,_} -> inet; {ssl, _} -> ssl end,
+                InetMod = case Connect of {ssl, _} -> ssl; _ -> inet end,
                 {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo, inetmod=InetMod}}
             catch
-            _Class:{Result,ST} ->
-                ?Error("erlimem connect error, result: ~n~p~nstacktrace:~n~p~n", [Result, ST]),
-                case Connect of
-                    {gen_tcp, Sock} -> gen_tcp:close(Sock);
-                    {ssl, Sock} -> ssl:close(Sock);
-                    _ -> ok
-                end,
-                {stop, Result}
+                _Class:Reason ->
+                    ?Error("erlimem connect error : ~p stackstrace : ~p~n", [Reason, erlang:get_stacktrace()]),
+                    case Connect of
+                        {gen_tcp, Sock} -> gen_tcp:close(Sock);
+                        {ssl, Sock} -> ssl:close(Sock);
+                        _ -> ok
+                    end,
+                    {stop, Reason}
             end;
         {error, Reason} ->
             ?Error("erlimem connect error, reason:~n~p", [Reason]),
@@ -317,7 +317,7 @@ connect(tcp, {IpAddr, Port, Schema}) -> connect(tcp, {IpAddr, Port, Schema, []})
 connect(tcp, {IpAddr, Port, Schema, Opts}) ->
     {TcpMod, InetMod} = case lists:member(ssl, Opts) of true -> {ssl, ssl}; _ -> {gen_tcp, inet} end,
     {ok, Ip} = inet:getaddr(IpAddr, inet),
-    ?Info("connecting to ~p:~p", [Ip, Port]),
+    ?Info("connecting to ~p:~p ~p", [Ip, Port, Opts]),
     case TcpMod:connect(Ip, Port, []) of
         {ok, Socket} ->
             InetMod:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
