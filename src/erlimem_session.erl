@@ -22,9 +22,9 @@
 
 % session APIs
 -export([ close/1
-        , exec/2
         , exec/3
         , exec/4
+        , exec/5
         , run_cmd/3
         , get_stmts/1
 		]).
@@ -47,14 +47,14 @@
 close({?MODULE, Pid}) -> gen_server:call(Pid, stop);
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
--spec exec(list(), {atom(), pid()}) -> term().
-exec(StmtStr, Ctx) -> exec(StmtStr, 0, Ctx).
+-spec exec(list(), list(), {atom(), pid()}) -> term().
+exec(StmtStr, Params, Ctx) -> exec(StmtStr, 0, Ctx, Params).
 
--spec exec(list(), integer(), {atom(), pid()}) -> term().
-exec(StmtStr, BufferSize, Ctx) -> run_cmd(exec, [StmtStr, BufferSize], Ctx).
+-spec exec(list(), integer(), list(), {atom(), pid()}) -> term().
+exec(StmtStr, BufferSize, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, BufferSize], Ctx).
 
--spec exec(list(), integer(), fun(), {atom(), pid()}) -> term().
-exec(StmtStr, BufferSize, Fun, Ctx) -> run_cmd(exec, [StmtStr, BufferSize, Fun], Ctx).
+-spec exec(list(), integer(), fun(), {atom(), pid()}, list()) -> term().
+exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, BufferSize, Fun], Ctx).
 
 -spec run_cmd(atom(), list(), {atom(), pid()}) -> term().
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
@@ -114,7 +114,8 @@ handle_call(Msg, From, #state{connection=Connection
     NewMsg = case Cmd of
         exec ->
             NewEvtPids = EvtPids,
-            list_to_tuple([Cmd,SeCo|Rest] ++ [Schema]);
+            [Params|Args] = Rest,
+            list_to_tuple([Cmd,SeCo|Args] ++ [[{schema, Schema}, {params, Params}]]);
         subscribe ->
             [Evt|_] = Rest,
             {Pid, _} = From,
