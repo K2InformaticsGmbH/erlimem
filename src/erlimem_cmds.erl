@@ -54,7 +54,7 @@ recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
     receive
         {_, {error, Exception}} ->
             ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
-            throw({{error, Exception}, erlang:get_stacktrace()});
+            throw({error, Exception});
         Data ->
             ?Debug("LOCAL ___RX___ ~p", [Data]),
             Data
@@ -78,10 +78,10 @@ recv_sync({Mod, Sock}, Bin, Len) when Mod =:= ssl; Mod =:= gen_tcp ->
                 recv_sync({Mod, Sock}, NewBin, NewLen);
             {_, {error, Exception}} ->
                 ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
-                throw({{error, Exception}, erlang:get_stacktrace()});
-            {error, Exception} ->
-                ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
-                throw({{error, Exception}, erlang:get_stacktrace()});
+                throw({error, Exception});
+            %{error, Exception} ->
+            %    ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),
+            %    throw({error, Exception});
             Term ->
                 ?Debug("TCP ___RX___ ~p", [Term]),
                 Term
