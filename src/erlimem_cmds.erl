@@ -66,7 +66,7 @@ recv_sync({Mod, Sock}, Bin, Len) when Mod =:= ssl; Mod =:= gen_tcp ->
             if Bin =:= <<>> ->
                 << L:32, PayLoad/binary >> = Pkt,
                 LenBytes = << L:32 >>,
-                ?Info(" term size ~p~n", [LenBytes]),
+                ?Debug("term size ~p~n", [LenBytes]),
                 {L, PayLoad};
             true -> {Len, <<Bin/binary, Pkt/binary>>}
         end,
