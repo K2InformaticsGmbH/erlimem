@@ -74,7 +74,8 @@ init([Type, Opts, {User, Pswd}]) ->
 init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) ->
     ?Debug("connecting with ~p cred ~p", [{Type, Opts}, {User, Pswd}]),
     case connect(Type, Opts) of
-        {ok, Connect, Schema} ->
+        {ok, Connect, Schema} = Response ->
+            ?Debug("Response from server connect ~p", [Response]),
             try
                 SeCo = get_seco(User, Connect, Pswd, NewPswd),
                 ?Debug("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
@@ -161,7 +162,7 @@ handle_info({Tcp,S,Pkt}, #state{buf={Len,Buf}, inetmod=InetMod}=State) when Tcp 
     NewState = process_commands(Commands, State),
     {noreply, NewState#state{buf={NewLen, NewBin}}};
 handle_info({TcpClosed,Socket}, State) when TcpClosed =:= tcp_closed; TcpClosed =:= ssl_closed ->
-    ?Info("~p tcp closed ~p", [self(), Socket]),
+    ?Debug("~p tcp closed ~p", [self(), Socket]),
     {stop,normal,State};
 
 % statement monitor events
@@ -318,7 +319,7 @@ connect(tcp, {IpAddr, Port, Schema}) -> connect(tcp, {IpAddr, Port, Schema, []})
 connect(tcp, {IpAddr, Port, Schema, Opts}) ->
     {TcpMod, InetMod} = case lists:member(ssl, Opts) of true -> {ssl, ssl}; _ -> {gen_tcp, inet} end,
     {ok, Ip} = inet:getaddr(IpAddr, inet),
-    ?Info("connecting to ~p:~p ~p", [Ip, Port, Opts]),
+    ?Debug("connecting to ~p:~p ~p", [Ip, Port, Opts]),
     case TcpMod:connect(Ip, Port, []) of
         {ok, Socket} ->
             InetMod:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
