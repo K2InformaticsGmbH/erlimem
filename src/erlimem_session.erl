@@ -69,15 +69,15 @@ get_stmts(PidStr)         -> gen_server:call(list_to_pid(PidStr), get_stmts, ?SE
 %
 % gen_server callbacks
 %
-init([Type, Opts, {User, Pswd}]) ->
-    init([Type, Opts, {User, Pswd, undefined}]);
-init([Type, Opts, {User, Pswd, NewPswd}]) when is_binary(User), is_binary(Pswd) ->
-    ?Debug("connecting with ~p cred ~p", [{Type, Opts}, {User, Pswd}]),
+init([Type, Opts, {User, Pswd, SessionId}]) ->
+    init([Type, Opts, {User, Pswd, undefined, SessionId}]);
+init([Type, Opts, {User, Pswd, NewPswd, SessionId}]) when is_binary(User), is_binary(Pswd) ->
+    ?Debug("connecting with ~p cred ~p", [{Type, Opts}, {User, Pswd, SessionId}]),
     case connect(Type, Opts) of
         {ok, Connect, Schema} = Response ->
             ?Debug("Response from server connect ~p", [Response]),
             try
-                SeCo = get_seco(User, Connect, Pswd, NewPswd),
+                SeCo = get_seco(User, SessionId, Connect, Pswd, NewPswd),
                 ?Debug("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
                 InetMod = case Connect of {ssl, _} -> ssl; _ -> inet end,
                 {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo, inetmod=InetMod}}
@@ -261,11 +261,11 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 % private functions
 %
 
--spec get_seco(binary(), {atom(), term()}, binary(), undefined | binary()) -> undefined | integer().
-get_seco(_, {local, _}, _, _) -> undefined;
-get_seco(User, Connect, Pswd, undefined) ->
+-spec get_seco(binary(), binary() | atom(), {atom(), term()}, binary(), undefined | binary()) -> undefined | integer().
+get_seco(_, _, {local, _}, _, _) -> undefined;
+get_seco(User, SessionId, Connect, Pswd, undefined) ->
     ?Debug("New Password is undefined"),
-    S = authenticate_user(User, Connect, Pswd),
+    S = authenticate_user(User, SessionId, Connect, Pswd),
     erlimem_cmds:exec(undefined, {login,S}, Connect),
     {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
     ?Debug("logged in ~p", [{User, S}]),
@@ -275,8 +275,8 @@ get_seco(User, Connect, Pswd, undefined) ->
         _ -> ok
     end,
     S;
-get_seco(User, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
-    S = authenticate_user(User, Connect, Pswd),
+get_seco(User, SessionId, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
+    S = authenticate_user(User, SessionId, Connect, Pswd),
     NewSeco = change_password(S, Connect, Pswd, NewPswd),
     ?Debug("password changed ~p", [{User, NewSeco}]),
     case Connect of
@@ -293,10 +293,10 @@ ensure_md5_password(Pswd) ->
         false -> Pswd
     end.
 
--spec authenticate_user(binary(), {atom(), term()}, binary()) -> integer().
-authenticate_user(User, Connect, Pswd) ->
+-spec authenticate_user(binary(), binary() | atom(), {atom(), term()}, binary()) -> integer().
+authenticate_user(User, SessionId, Connect, Pswd) ->
     PswdMD5 = ensure_md5_password(Pswd),
-    erlimem_cmds:exec(undefined, {authenticate, undefined, adminSessionId, User, {pwdmd5, PswdMD5}}, Connect),
+    erlimem_cmds:exec(undefined, {authenticate, undefined, SessionId, User, {pwdmd5, PswdMD5}}, Connect),
     {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
     ?Debug("authenticated ~p -> ~p", [User, S]),
     S.

@@ -31,7 +31,7 @@ start() ->
 -spec stop() -> ok | {error, term()}.
 stop() ->  application:stop(?MODULE).
 
--spec open(atom(), tuple(), {binary(), binary()}) -> {ok, {atom(), pid()}} | {error, term()}.
+-spec open(atom(), tuple(), tuple()) -> {ok, {atom(), pid()}} | {error, term()}.
 open(Type, Opts, Cred) ->
     case lists:keymember(erlimem, 1, application:which_applications()) of
     false -> erlimem:start();
