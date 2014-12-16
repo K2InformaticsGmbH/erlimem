@@ -286,17 +286,9 @@ get_seco(User, SessionId, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
     end,
     NewSeco.
 
--spec ensure_md5_password(binary()) -> binary().
-ensure_md5_password(Pswd) ->
-    case io_lib:printable_unicode_list(binary_to_list(Pswd)) of
-        true -> erlang:md5(Pswd);
-        false -> Pswd
-    end.
-
 -spec authenticate_user(binary(), binary() | atom(), {atom(), term()}, binary()) -> integer().
 authenticate_user(User, SessionId, Connect, Pswd) ->
-    PswdMD5 = ensure_md5_password(Pswd),
-    erlimem_cmds:exec(undefined, {authenticate, undefined, SessionId, User, {pwdmd5, PswdMD5}}, Connect),
+    erlimem_cmds:exec(undefined, {authenticate, undefined, SessionId, User, {pwdmd5, Pswd}}, Connect),
     {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
     ?Debug("authenticated ~p -> ~p", [User, S]),
     S.
@@ -304,9 +296,7 @@ authenticate_user(User, SessionId, Connect, Pswd) ->
 -spec change_password(integer(), {atom(), term()}, binary(), binary()) -> integer().
 change_password(S, Connect, Pswd, NewPswd) ->
     ?Debug("Changing password, params: ~p", [{S, Connect, Pswd, NewPswd}]),
-    PswdMD5 = ensure_md5_password(Pswd),
-    NewPswdMD5 = ensure_md5_password(NewPswd),
-    erlimem_cmds:exec(undefined, {change_credentials, S, {pwdmd5, PswdMD5}, {pwdmd5, NewPswdMD5}}, Connect),
+    erlimem_cmds:exec(undefined, {change_credentials, S, {pwdmd5, Pswd}, {pwdmd5, NewPswd}}, Connect),
     {undefined, NewSeco} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
     case NewSeco of
         S -> ok;
