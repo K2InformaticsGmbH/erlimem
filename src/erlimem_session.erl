@@ -27,10 +27,12 @@
         , exec/5
         , run_cmd/3
         , get_stmts/1
+
 		]).
 
 % gen_server callbacks
--export([ init/1
+-export([ start_link/3
+        , init/1
         , handle_call/3
         , handle_cast/2
         , handle_info/2
@@ -38,6 +40,17 @@
         , code_change/3
         , add_stmt_fsm/3
         ]).
+
+start_link(Type, Opts, Cred) ->
+    ?Info("~p starting...", [?MODULE]),
+    case gen_server:start_link(?MODULE, [Type, Opts, Cred], [{spawn_opt, [{fullsweep_after, 0}]}]) of
+        {ok, _} = Success ->
+            ?Info("~p started!", [?MODULE]),
+            Success;
+        Error ->
+            ?Error("~p failed to start ~p", [?MODULE, Error]),
+            Error
+    end.
 
 %
 % interface functions

@@ -10,7 +10,7 @@
                   stdlib,
                   ssl
                  ]},
-  {mod, { erlimem_app, []}},
+  {mod, { erlimem, []}},
   {env, [
          {logging, info}
         ]}
