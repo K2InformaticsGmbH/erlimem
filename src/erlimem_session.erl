@@ -27,7 +27,6 @@
         , exec/5
         , run_cmd/3
         , get_stmts/1
-
 		]).
 
 % gen_server callbacks
