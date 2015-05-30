@@ -12,7 +12,7 @@
 -export([init/1]).
 
 %% Public APIs
--export([open/3, loglevel/1]).
+-export([open/2, loglevel/1]).
 
 -spec loglevel(atom()) -> ok.
 loglevel(L) -> application:set_env(erlimem, logging, L).
@@ -59,9 +59,12 @@ init(_) ->
 %% ===================================================================
 %% Public APIs
 %% ===================================================================
--spec open(atom(), tuple(), tuple()) -> {ok, {atom(), pid()}} | {error, term()}.
-open(Type, Opts, Cred) ->
-    case supervisor:start_child(?MODULE, [Type, Opts, Cred]) of
+-spec open(local | local_sec | {rpc | atom()}
+           | {tcp, inet:ip_address() | inet:hostname(),
+              inet:port_number()}, atom()) ->
+    {ok, {erlimem_session, pid()}} | {error, term()}.
+open(Connect, Schema) ->
+    case supervisor:start_child(?MODULE, [Connect, Schema]) of
         {error, {error, Error}} -> {error, Error};
         {error, Error}          -> {error, Error};
         {ok, Pid}               -> {ok, {erlimem_session, Pid}}

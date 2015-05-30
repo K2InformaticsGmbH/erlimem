@@ -5,20 +5,27 @@
 -export([exec/3, recv_sync/3]).
 
 -spec exec(undefined | pid(), tuple(), {atom(), term()}) -> ok | {error, atom()}.
+exec(Ref, CmdTuple, {rpc, Node}) when Node == node() ->
+    exec(Ref, CmdTuple, local_sec);
 exec(Ref, CmdTuple, {rpc, Node}) ->
-    exec_catch(Ref, undefined, Node, imem_sec, CmdTuple);
-exec(Ref, CmdTuple, {local_sec, _}) ->
-    exec_catch(Ref, undefined, node(), imem_sec, CmdTuple);
-exec(Ref, CmdTuple, {local, _}) ->
+    exec_catch(Ref, {rpc, Node}, imem_sec, CmdTuple);
+exec(Ref, CmdTuple, local_sec) ->
+    exec_catch(Ref, local_sec, imem_sec, CmdTuple);
+exec(Ref, CmdTuple, local) ->
     {[Cmd|_], Args} = lists:split(1, tuple_to_list(CmdTuple)),
-    exec_catch(Ref, undefined, node(), imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)]));
+    exec_catch(Ref, local, imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)]));
 exec(Ref, CmdTuple, {gen_tcp, Socket}) ->
-    exec_catch(Ref, {gen_tcp, Socket}, undefined, imem_sec, CmdTuple);
+    exec_catch(Ref, {gen_tcp, Socket}, imem_sec, CmdTuple);
 exec(Ref, CmdTuple, {ssl, Socket}) ->
-    exec_catch(Ref, {ssl, Socket}, undefined, imem_sec, CmdTuple).
+    exec_catch(Ref, {ssl, Socket}, imem_sec, CmdTuple).
 
--spec exec_catch(undefined | pid(), undefined | gen_tcp:socket(), atom(), imem_sec | imem_meta, tuple()) -> ok | {error, atom()}.
-exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
+-spec exec_catch(undefined | pid(),
+                 {rpc, atom()}
+                 | {gen_tcp, gen_tcp:socket()}
+                 | {ssl, ssl:sslsocket()},
+                 imem_sec | imem_meta,
+                 tuple()) -> ok | {error, atom()}.
+exec_catch(Ref, Media, Mod, CmdTuple) ->
     {Cmd, Args0} = lists:split(1, tuple_to_list(CmdTuple)),
     Fun = lists:nth(1, Cmd),
 
@@ -28,16 +35,12 @@ exec_catch(Ref, Media, Node, Mod, CmdTuple) ->
     end,
     try
         case Media of
-            undefined ->
-                ?Debug("LOCAL ___TX___ ~p", [{Node, Mod, Fun, Args}]),
-                case Node of
-                    Node when Node =:= node() ->
-                        ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
-                        ok = apply(imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
-                    _ ->
-                        ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
-                        ok = rpc:call(Node, imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}])
-                end;
+            Media when Media == local; Media == local_sec ->
+                ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
+                ok = apply(imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
+            {rpc, Node} ->
+                ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
+                ok = rpc:call(Node, imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
             {Transport, Socket} ->
                 ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
                 ReqBin = term_to_binary({Ref,Mod,Fun,Args}),

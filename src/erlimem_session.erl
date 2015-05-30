@@ -6,14 +6,16 @@
 
 -record(state, {
     stmts       = [],
-    connection  = {type, handle},
+    connect_conf,
+    connection,
     event_pids  = [],
     buf         = {0, <<>>},
-    conn_param,
     schema,
-    seco,
+    seco = '$not_a_session',
     maxrows,
-    inetmod
+    inetmod,
+    authorized = false,
+    unauthIdleTmr = '$not_a_timer'
 }).
 
 -record(stmt, {
@@ -21,31 +23,19 @@
 }).
 
 % session APIs
--export([ close/1
-        , exec/3
-        , exec/4
-        , exec/5
-        , run_cmd/3
-        , get_stmts/1
-		]).
+-export([close/1, exec/3, exec/4, exec/5, run_cmd/3, get_stmts/1, auth/4]).
 
 % gen_server callbacks
--export([ start_link/3
-        , init/1
-        , handle_call/3
-        , handle_cast/2
-        , handle_info/2
-        , terminate/2
-        , code_change/3
-        , add_stmt_fsm/3
-        ]).
+-export([start_link/2, init/1, handle_call/3, handle_cast/2, handle_info/2,
+         terminate/2, code_change/3, add_stmt_fsm/3]).
 
-start_link(Type, Opts, Cred) ->
-    ?Info("~p starting...", [?MODULE]),
-    case gen_server:start_link(?MODULE, [Type, Opts, Cred], [{spawn_opt, [{fullsweep_after, 0}]}]) of
-        {ok, _} = Success ->
-            ?Info("~p started!", [?MODULE]),
-            Success;
+-spec start_link(local | local_sec | {rpc | atom()}
+                 | {tcp, inet:ip_address() | inet:hostname(),
+                 inet:port_number()}, atom()) ->
+    {ok, pid()} | {error, any()}.
+start_link(Connect, Schema) ->
+    case gen_server:start_link(?MODULE, [Connect, Schema], [{spawn_opt, [{fullsweep_after, 0}]}]) of
+        {ok, _} = Success -> Success;
         Error ->
             ?Error("~p failed to start ~p", [?MODULE, Error]),
             Error
@@ -71,6 +61,17 @@ exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, B
 -spec run_cmd(atom(), list(), {atom(), pid()}) -> term().
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
 
+-spec auth(AppId :: atom(), SessionId :: any(),
+           Credentials :: tuple(), {?MODULE, pid()}) ->
+    ok | {ok,[DDCredentialRequest :: tuple()]} | no_return().
+auth(AppId, SessionId, Credentials, {?MODULE, Pid}) when is_atom(AppId) ->
+    case gen_server:call(Pid, {auth, AppId, SessionId, Credentials}, ?IMEM_TIMEOUT) of
+        {SKey,[]} -> gen_server:call(Pid, {skey, SKey, true}, ?IMEM_TIMEOUT);
+        {SKey,Steps} ->
+            gen_server:call(Pid, {skey, SKey, false}, ?IMEM_TIMEOUT),
+            {ok, Steps}
+    end.
+
 -spec add_stmt_fsm(pid(), {atom(), pid()}, {atom(), pid()}) -> ok.
 add_stmt_fsm(StmtRef, StmtFsm, {?MODULE, Pid}) -> gen_server:call(Pid, {add_stmt_fsm, StmtRef, StmtFsm}, ?SESSION_TIMEOUT).
 
@@ -81,35 +82,104 @@ get_stmts(PidStr)         -> gen_server:call(list_to_pid(PidStr), get_stmts, ?SE
 %
 % gen_server callbacks
 %
-init([Type, Opts, {User, Pswd, SessionId}]) ->
-    init([Type, Opts, {User, Pswd, undefined, SessionId}]);
-init([Type, Opts, {User, Pswd, NewPswd, SessionId}]) when is_binary(User), is_binary(Pswd) ->
-    ?Debug("connecting with ~p cred ~p", [{Type, Opts}, {User, Pswd, SessionId}]),
-    case connect(Type, Opts) of
-        {ok, Connect, Schema} = Response ->
-            ?Debug("Response from server connect ~p", [Response]),
-            try
-                SeCo = get_seco(User, SessionId, Connect, Pswd, NewPswd),
-                ?Debug("~p connects ~p over ~p with ~p", [self(), User, Type, Opts]),
-                InetMod = case Connect of {ssl, _} -> ssl; _ -> inet end,
-                {ok, #state{connection=Connect, schema=Schema, conn_param={Type, Opts}, seco=SeCo, inetmod=InetMod}}
-            catch
-                _Class:Reason ->
-                    ?Error("erlimem connect error : ~p stackstrace : ~p~n", [Reason, erlang:get_stacktrace()]),
-                    case Connect of
-                        {gen_tcp, Sock} -> gen_tcp:close(Sock);
-                        {ssl, Sock} -> ssl:close(Sock);
-                        _ -> ok
-                    end,
-                    {stop, Reason}
-            end;
-        {error, Reason} ->
-            ?Error("erlimem connect error, reason:~n~p", [Reason]),
+init([Connect, Schema]) ->
+    try
+        State = #state{schema = Schema,
+                       unauthIdleTmr = erlang:send_after(?UNAUTHIDLETIMEOUT, self(), unauthorized),
+                       connect_conf = Connect},
+        case connect(Connect) of
+            ok ->
+                {ok,
+                 case Connect of
+                     {rpc, Node} -> State#state{connection = {rpc, Node}};
+                     local_sec -> State#state{connection = local_sec};
+                     local ->
+                         catch erlang:cancel_timer(State#state.unauthIdleTmr),
+                         State#state{connection = local, authorized = true,
+                                     unauthIdleTmr = '$not_a_timer'}
+                 end
+                };
+            {ok, Transport, Socket} ->
+                {ok, State#state{
+                       connection = {Transport, Socket},
+                       inetmod = case Socket of
+                                     {sslsocket, _, _} -> ssl;
+                                     _ -> inet
+                                 end}
+                };
+            {error, Error} ->
+                ?Error("connect error ~p", [Error]),
+                catch erlang:cancel_timer(State#state.unauthIdleTmr),
+                {stop, Error}
+        end
+    catch
+        _Class:Reason ->
+            ?Error("connect error ~p stackstrace ~p",
+                   [Reason, erlang:get_stacktrace()]),
+            case Connect of
+                {gen_tcp, Sock} -> gen_tcp:close(Sock);
+                {ssl, Sock} -> ssl:close(Sock);
+                _ -> ok
+            end,
             {stop, Reason}
     end.
 
+-spec connect(local | local_sec | {rpc | atom()}
+              | {tcp, inet:ip_address() | inet:hostname(),
+                 inet:port_number()}) ->
+    ok
+    | {ok, ssl, ssl:sslsocket()} | {ok, gen_tcp, gen_tcp:socket()}
+    | {error, term()}.
+connect({tcp, IpAddr, Port}) -> connect({tcp, IpAddr, Port, []});
+connect({tcp, IpAddr, Port, Opts}) ->
+    {TcpMod, InetMod} = case lists:member(ssl, Opts) of
+                            true -> {ssl, ssl};
+                            _ -> {gen_tcp, inet}
+                        end,
+    {ok, Ip} = inet:getaddr(IpAddr, inet),
+    ?Debug("connecting to ~p:~p ~p", [Ip, Port, Opts]),
+    case TcpMod:connect(Ip, Port, []) of
+        {ok, Socket} ->
+            case InetMod:setopts(Socket, [{active, once}, binary, {packet, 0}, {nodelay, true}]) of
+                ok ->
+                    {ok, case lists:member(ssl, Opts) of
+                             true -> ssl;
+                             _ -> gen_tcp
+                         end,
+                     Socket};
+                {error, Error} -> {error, Error}
+            end;
+        {error, Error} -> {error, Error}
+    end;
+connect({rpc, Node}) when Node == node()    -> connect(local_sec);
+connect({rpc, Node}) when is_atom(Node)     ->
+    case net_adm:ping(Node) of
+        ping -> ok;
+        pang -> {error, node_unreachable}
+    end;
+connect(local_sec)                          -> ok;
+connect(local)                              -> ok.
+
 %% handle_call overloads
 %%
+handle_call({auth, AppId, SessionId, Credentials}, From,
+            #state{seco = '$not_a_session', authorized = false} = State) ->
+    handle_call([auth_start, AppId, SessionId, Credentials], From, State);
+handle_call({auth, _AppId, _SessionId, Credentials}, From, #state{authorized = false} = State) ->
+    handle_call([auth_add_cred, Credentials], From, State);
+handle_call({skey, SKey, Authorized}, _From, #state{authorized = false} = State) ->
+    {reply, ok, State#state{
+                  seco = case State#state.seco of % SKey can be set only once
+                             '$not_a_session' -> SKey;
+                             _ -> State#state.seco
+                         end,
+                  unauthIdleTmr
+                  = if Authorized ->
+                           catch erlang:cancel_timer(State#state.unauthIdleTmr),
+                           '$not_a_timer';
+                       true -> State#state.unauthIdleTmr
+                    end,
+                  authorized = Authorized}};
 handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};
 handle_call(stop, _From, State) ->
@@ -122,7 +192,6 @@ handle_call(Msg, From, #state{connection=Connection
                              ,schema=Schema
                              ,seco=SeCo
                              ,event_pids=EvtPids} = State) ->
-    ?Debug("call ~p", [Msg]),
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
         exec ->
@@ -138,14 +207,22 @@ handle_call(Msg, From, #state{connection=Connection
             NewEvtPids = EvtPids,
             list_to_tuple([Cmd,SeCo|Rest])
     end,
+    ?Debug("call ~p", [NewMsg]),
     case (catch erlimem_cmds:exec(From, NewMsg, Connection)) of
+        {'EXIT', E} ->
+            ?Error("cmd ~p error~n~p~n", [Cmd, E]),
+            {reply, E, State#state{event_pids=NewEvtPids}};
         {{error, E}, ST} ->
             ?Error("cmd ~p error~n~p~n", [Cmd, E]),
             ?Debug("~p", [ST]),
             {reply, E, State#state{event_pids=NewEvtPids}};
-        _Result ->
+        Result ->
+            if Result /= ok -> ?Warn("Unexpected result ~p", [Result]);
+               true -> ok
+            end,
             {noreply,State#state{event_pids=NewEvtPids}}
     end.
+
 
 %% handle_cast overloads
 %%  unhandled
@@ -155,6 +232,15 @@ handle_cast(Request, State) ->
 
 %% handle_info overloads
 %%
+handle_info(unauthorized, State) ->
+    case State#state.authorized of
+        false ->
+            ?Error("Session authorization timeout"),
+            {stop,normal,State};
+        true ->
+            ?Info("Session already authorized"),
+            {noreply, State#state{unauthIdleTmr = '$not_a_timer'}}
+    end;
 handle_info(timeout, State) ->
     ?Info("~p close on timeout", [self()]),
     {stop,normal,State};
@@ -173,8 +259,8 @@ handle_info({Tcp,S,Pkt}, #state{buf={Len,Buf}, inetmod=InetMod}=State) when Tcp 
     {NewLen, NewBin, Commands} = split_packages(Len, <<Buf/binary, Pkt/binary>>),
     NewState = process_commands(Commands, State),
     {noreply, NewState#state{buf={NewLen, NewBin}}};
-handle_info({TcpClosed,Socket}, State) when TcpClosed =:= tcp_closed; TcpClosed =:= ssl_closed ->
-    ?Debug("~p tcp closed ~p", [self(), Socket]),
+handle_info({Closed,Socket}, State) when Closed =:= tcp_closed; Closed =:= ssl_closed ->
+    ?Info("~p ~p ~p", [self(), Closed, Socket]),
     {stop,normal,State};
 
 % statement monitor events
@@ -262,80 +348,30 @@ handle_info(Info, State) ->
     ?Error([session, self()], "unknown info ~p", [Info]),
     {noreply, State}.
 
-terminate(Reason, #state{conn_param={Type, Opts},stmts=Stmts}) ->
-    _ = [StmtFsm:stop() || #stmt{fsm=StmtFsm} <- Stmts],
-    ?Debug("stopped ~p config ~p for ~p", [self(), {Type, Opts}, Reason]).
+terminate(Reason, #state{connection = Connect} = State) ->
+    try
+        _ = [StmtFsm:stop() || #stmt{fsm=StmtFsm} <- State#state.stmts],
+        if State#state.authorized ->
+               erlimem_cmds:exec(undefined, {logout, State#state.seco}, Connect);
+           true -> ok
+        end,
+        case Connect of
+            {_, Transport, Socket} -> Transport:close(Socket);
+            _ -> ok
+        end        
+    catch
+        _:Exception -> ?Error("Cleanup error ~p: ~p",
+                              [Exception, erlang:get_stacktrace()])
+    end,
+    ?Debug("stopped ~p config ~p for ~p", [self(), Connect, Reason]).
 
-code_change(_OldVsn, State, _Extra) -> {ok, State}.
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
 
 
 %
 % private functions
 %
-
--spec get_seco(binary(), binary() | atom(), {atom(), term()}, binary(), undefined | binary()) -> undefined | integer().
-get_seco(_, _, {local, _}, _, _) -> undefined;
-get_seco(User, SessionId, Connect, Pswd, undefined) ->
-    ?Debug("New Password is undefined"),
-    S = authenticate_user(User, SessionId, Connect, Pswd),
-    erlimem_cmds:exec(undefined, {login,S}, Connect),
-    {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
-    ?Debug("logged in ~p", [{User, S}]),
-    case Connect of
-        {gen_tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
-        {ssl,Sck}     -> ssl:setopts(Sck,[{active,once}]);
-        _ -> ok
-    end,
-    S;
-get_seco(User, SessionId, Connect, Pswd, NewPswd) when is_binary(NewPswd) ->
-    S = authenticate_user(User, SessionId, Connect, Pswd),
-    NewSeco = change_password(S, Connect, Pswd, NewPswd),
-    ?Debug("password changed ~p", [{User, NewSeco}]),
-    case Connect of
-        {gen_tcp,Sck} -> inet:setopts(Sck,[{active,once}]);
-        {ssl,Sck}     -> ssl:setopts(Sck,[{active,once}]);
-        _ -> ok
-    end,
-    NewSeco.
-
--spec authenticate_user(binary(), binary() | atom(), {atom(), term()}, binary()) -> integer().
-authenticate_user(User, SessionId, Connect, Pswd) ->
-    erlimem_cmds:exec(undefined, {authenticate, undefined, SessionId, User, {pwdmd5, Pswd}}, Connect),
-    {undefined, S} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
-    ?Debug("authenticated ~p -> ~p", [User, S]),
-    S.
-
--spec change_password(integer(), {atom(), term()}, binary(), binary()) -> integer().
-change_password(S, Connect, Pswd, NewPswd) ->
-    ?Debug("Changing password, params: ~p", [{S, Connect, Pswd, NewPswd}]),
-    erlimem_cmds:exec(undefined, {change_credentials, S, {pwdmd5, Pswd}, {pwdmd5, NewPswd}}, Connect),
-    {undefined, NewSeco} = erlimem_cmds:recv_sync(Connect, <<>>, 0),
-    case NewSeco of
-        S -> ok;
-        _ -> logout(S, Connect)
-    end,
-    NewSeco.
-
--spec connect(atom(), tuple()) -> {ok, {atom(), term()}, term()} | {error, term()}.
-connect(tcp, {IpAddr, Port, Schema}) -> connect(tcp, {IpAddr, Port, Schema, []});
-connect(tcp, {IpAddr, Port, Schema, Opts}) ->
-    {TcpMod, InetMod} = case lists:member(ssl, Opts) of true -> {ssl, ssl}; _ -> {gen_tcp, inet} end,
-    {ok, Ip} = inet:getaddr(IpAddr, inet),
-    ?Debug("connecting to ~p:~p ~p", [Ip, Port, Opts]),
-    case TcpMod:connect(Ip, Port, []) of
-        {ok, Socket} ->
-            InetMod:setopts(Socket, [{active, false}, binary, {packet, 0}, {nodelay, true}]),
-            {ok, {case lists:member(ssl, Opts) of true -> ssl; _ -> gen_tcp end, Socket}, Schema};
-        {error, _} = Error -> Error
-    end;
-connect(rpc, {Node, Schema}) when Node == node() -> connect(local_sec, {Schema});
-connect(rpc, {Node, Schema}) when is_atom(Node)  -> {ok, {rpc, Node}, Schema};
-connect(local_sec, {Schema})                     -> {ok, {local_sec, undefined}, Schema};
-connect(local, {Schema})                         -> {ok, {local, undefined}, Schema}.
-
--spec logout(integer(), {atom(), term()}) -> ok | {error, atom()}.
-logout(S, Connect) ->
-    erlimem_cmds:exec(undefined, {logout, S}, Connect).
 
 % tcp helpers
 -spec split_packages(integer(), binary()) -> {integer(), binary(), [binary()]}.
