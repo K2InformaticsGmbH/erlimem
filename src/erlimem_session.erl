@@ -66,8 +66,9 @@ run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [C
     ok | {ok,[DDCredentialRequest :: tuple()]} | no_return().
 auth(AppId, SessionId, Credentials, {?MODULE, Pid}) when is_atom(AppId) ->
     case gen_server:call(Pid, {auth, AppId, SessionId, Credentials}, ?IMEM_TIMEOUT) of
+        {error, {{E,M},ST}} -> throw({{E,M},ST});
         {SKey,[]} -> gen_server:call(Pid, {skey, SKey, true}, ?IMEM_TIMEOUT);
-        {SKey,Steps} ->
+        {SKey,Steps} when is_list(Steps) ->
             gen_server:call(Pid, {skey, SKey, false}, ?IMEM_TIMEOUT),
             {ok, Steps}
     end.
