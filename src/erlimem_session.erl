@@ -46,7 +46,11 @@ start_link(Connect, Schema) ->
 %
 
 -spec close({atom(), pid()} | {atom(), pid(), pid()}) -> ok.
-close({?MODULE, Pid}) -> gen_server:call(Pid, stop);
+close({?MODULE, Pid}) ->
+    case catch is_process_alive(Pid) of
+        true ->	gen_server:call(Pid, stop);
+        _ -> ok
+    end;
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
 -spec exec(list(), list(), {atom(), pid()}) -> term().
