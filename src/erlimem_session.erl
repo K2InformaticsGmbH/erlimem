@@ -329,7 +329,7 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
             ?Error("statement ~p not found in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
             {noreply, State}
     end;
-handle_info({From,Resp}, #state{stmts=Stmts}=State) ->
+handle_info({{P,_} = From,Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
     case Resp of
             {error, Exception} ->
                 ?Error("to ~p throw~n~p~n", [From, Exception]),
