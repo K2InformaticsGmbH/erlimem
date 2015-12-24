@@ -130,8 +130,9 @@ init([Connect, Schema]) ->
     end.
 
 -spec connect(local | local_sec | {rpc | atom()}
-              | {tcp, inet:ip_address() | inet:hostname(),
-                 inet:port_number()}) ->
+              | {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}
+              | {tcp, inet:ip_address() | inet:hostname(), inet:port_number(),
+                 Opts::list()}) ->
     ok
     | {ok, ssl, ssl:sslsocket()} | {ok, gen_tcp, gen_tcp:socket()}
     | {error, term()}.
@@ -170,20 +171,26 @@ connect(local)                              -> ok.
 handle_call({auth, AppId, SessionId, Credentials}, From,
             #state{seco = '$not_a_session', authorized = false} = State) ->
     handle_call([auth_start, AppId, SessionId, Credentials], From, State);
-handle_call({auth, _AppId, _SessionId, Credentials}, From, #state{authorized = false} = State) ->
-    handle_call([auth_add_cred, Credentials], From, State);
+handle_call({auth, _AppId, _SessionId, Credentials}, From,
+            #state{authorized = false} = State) ->
+    catch erlang:cancel_timer(State#state.unauthIdleTmr),
+    handle_call([auth_add_cred, Credentials], From,
+                State#state{unauthIdleTmr
+                            = erlang:send_after(?UNAUTHIDLETIMEOUT, self(),
+                                                unauthorized)});
 handle_call({skey, SKey, Authorized}, _From, #state{authorized = false} = State) ->
+    catch erlang:cancel_timer(State#state.unauthIdleTmr),
     {reply, ok, State#state{
                   seco = case State#state.seco of % SKey can be set only once
                              '$not_a_session' -> SKey;
                              _ -> State#state.seco
                          end,
-                  unauthIdleTmr
-                  = if Authorized ->
-                           catch erlang:cancel_timer(State#state.unauthIdleTmr),
-                           '$not_a_timer';
-                       true -> State#state.unauthIdleTmr
-                    end,
+                  unauthIdleTmr = if Authorized -> '$not_a_timer';
+                                     true ->
+                                         erlang:send_after(
+                                           ?UNAUTHIDLETIMEOUT, self(),
+                                           unauthorized)
+                                  end,
                   authorized = Authorized}};
 handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};

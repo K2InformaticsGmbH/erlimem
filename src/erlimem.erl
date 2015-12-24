@@ -60,8 +60,9 @@ init(_) ->
 %% Public APIs
 %% ===================================================================
 -spec open(local | local_sec | {rpc | atom()}
-           | {tcp, inet:ip_address() | inet:hostname(),
-              inet:port_number()}, atom()) ->
+           | {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}
+           | {tcp, inet:ip_address() | inet:hostname(), inet:port_number(),
+              Opts::list()}, atom()) ->
     {ok, {erlimem_session, pid()}} | {error, term()}.
 open(Connect, Schema) ->
     case supervisor:start_child(?MODULE, [Connect, Schema]) of
