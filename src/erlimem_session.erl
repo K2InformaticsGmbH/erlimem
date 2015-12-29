@@ -160,7 +160,7 @@ connect({tcp, IpAddr, Port, Opts}) ->
 connect({rpc, Node}) when Node == node()    -> connect(local_sec);
 connect({rpc, Node}) when is_atom(Node)     ->
     case net_adm:ping(Node) of
-        ping -> ok;
+        pong -> ok;
         pang -> {error, node_unreachable}
     end;
 connect(local_sec)                          -> ok;
