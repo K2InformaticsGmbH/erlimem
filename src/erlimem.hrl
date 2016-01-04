@@ -1,5 +1,5 @@
 -define(IMEM_TIMEOUT,           infinity).
--define(UNAUTHIDLETIMEOUT,      5000).
+-define(UNAUTHIDLETIMEOUT,      100000).
 -define(SESSION_TIMEOUT,        3600000).
 -define(MAX_PREFETCH_ON_FLIGHT, 5).
 
