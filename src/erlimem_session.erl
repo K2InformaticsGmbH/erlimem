@@ -144,7 +144,7 @@ connect({tcp, IpAddr, Port, Opts}) ->
                         end,
     {ok, Ip} = inet:getaddr(IpAddr, inet),
     ?Debug("connecting to ~p:~p ~p", [Ip, Port, Opts]),
-    case TcpMod:connect(Ip, Port, []) of
+    case TcpMod:connect(Ip, Port, [], ?CONNECT_TIMEOUT) of
         {ok, Socket} ->
             case InetMod:setopts(Socket, [{active, once}, binary, {packet, 0}, {nodelay, true}]) of
                 ok ->

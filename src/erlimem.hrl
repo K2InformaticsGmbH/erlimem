@@ -1,6 +1,7 @@
 -define(IMEM_TIMEOUT,           infinity).
 -define(UNAUTHIDLETIMEOUT,      100000).
 -define(SESSION_TIMEOUT,        3600000).
+-define(CONNECT_TIMEOUT,        5000).
 -define(MAX_PREFETCH_ON_FLIGHT, 5).
 
 -define(LOG_TAG, "_IMDR_").
