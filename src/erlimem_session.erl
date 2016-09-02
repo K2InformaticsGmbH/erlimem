@@ -323,9 +323,13 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
                     StmtFsm:rows(Error),
                     ?Error([session, self()], "async_resp~n~p~n", [Result]),
                     {noreply, State};
-                {Rows, Completed} ->
+                {Rows, Completed} when is_list(Rows) ->
                     StmtFsm:rows({Rows,Completed}),
                     ?Debug("~p __RX__ received rows ~p status ~p", [StmtRef, length(Rows), Completed]),
+                    {noreply, State};
+                {delete, Info} ->
+                    StmtFsm:delete(Info),
+                    ?Debug("~p __RX__ deleted rows ~p", [StmtRef, Info]),
                     {noreply, State};
                 Unknown ->
                     StmtFsm:rows(Unknown),
