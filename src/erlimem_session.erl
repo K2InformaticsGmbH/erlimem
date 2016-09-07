@@ -343,7 +343,7 @@ handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when i
 handle_info({{P,_} = From,Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
     case Resp of
             {error, Exception} ->
-                ?Error("to ~p throw~n~p~n", [From, Exception]),
+                ?Debug("to ~p throw~n~p~n", [From, Exception]),
                 gen_server:reply(From,  {error, Exception}),
                 {noreply, State};
             {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
