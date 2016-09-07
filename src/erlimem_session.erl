@@ -315,21 +315,21 @@ handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:
     {noreply, State};
 
 % local / rpc / tcp fallback
-handle_info({_Ref,{StmtRef,{Rows,Completed}}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
+handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #stmt{fsm=StmtFsm}} ->
-            case {Rows,Completed} of
-                {error, Result} = Error ->
+            case Result of
+                {error, Resp} = Error ->
                     StmtFsm:rows(Error),
-                    ?Error([session, self()], "async_resp~n~p~n", [Result]),
+                    ?Error([session, self()], "async_resp~n~p~n", [Resp]),
+                    {noreply, State};
+                {delete, {Rows, Completed}} when is_list(Rows) ->
+                    StmtFsm:delete({Rows, Completed}),
+                    ?Debug("~p __RX__ deleted rows ~p status ~p", [StmtRef, length(Rows), Completed]),
                     {noreply, State};
                 {Rows, Completed} when is_list(Rows) ->
                     StmtFsm:rows({Rows,Completed}),
                     ?Debug("~p __RX__ received rows ~p status ~p", [StmtRef, length(Rows), Completed]),
-                    {noreply, State};
-                {delete, Info} ->
-                    StmtFsm:delete(Info),
-                    ?Debug("~p __RX__ deleted rows ~p", [StmtRef, Info]),
                     {noreply, State};
                 Unknown ->
                     StmtFsm:rows(Unknown),
