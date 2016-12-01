@@ -196,6 +196,10 @@ handle_call(get_stmts, _From, #state{stmts=Stmts} = State) ->
     {reply,[S|| {S,_} <- Stmts],State};
 handle_call(stop, _From, State) ->
     {stop,normal, ok, State};
+handle_call({add_stmt_fsm, StmtRef, {_, _, StmtFsmPid} = StmtFsm}, _From, #state{stmts=Stmts} = State) ->
+    erlang:monitor(process, StmtFsmPid),
+    NStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, #stmt{fsm = StmtFsm}}),
+    {reply,ok,State#state{stmts=NStmts}};
 handle_call({add_stmt_fsm, StmtRef, {_, StmtFsmPid} = StmtFsm}, _From, #state{stmts=Stmts} = State) ->
     erlang:monitor(process, StmtFsmPid),
     NStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, #stmt{fsm = StmtFsm}}),
