@@ -3,6 +3,10 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
+Version 1.2.7 (Release Date 18.01.2017)
+=======================================
+* added 3 tuple for rest service
+
 Version 1.2.6 (Release Date 16.09.2016)
 =======================================
 * TCP based connections timeout set to 5 seconds, non TCP connections 100 seconds
