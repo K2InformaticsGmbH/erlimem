@@ -66,7 +66,7 @@ exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, B
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
 
 -spec run_cmd_async(atom(), list(), {atom(), pid()}) -> term().
-run_cmd_async(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:cast(Pid, [Cmd, self() |Args]).
+run_cmd_async(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:cast(Pid, {self(), [Cmd | Args]}).
 
 -spec auth(AppId :: atom(), SessionId :: any(),
            Credentials :: tuple(), {?MODULE, pid()}) ->
@@ -242,11 +242,11 @@ handle_call(Msg, From, #state{connection=Connection
             {noreply,State#state{event_pids=NewEvtPids}}
     end.
 
-handle_cast(Msg, #state{connection=Connection, seco=SeCo} = State) ->
-    [Cmd, From | Rest] = Msg,
+handle_cast({From, Msg}, #state{connection=Connection, seco=SeCo} = State) ->
+    [Cmd | Rest] = Msg,
     NewMsg = list_to_tuple([Cmd, SeCo | Rest]),
     ?Debug("call ~p", [NewMsg]),
-    AsyncFrom = {async, From},
+    AsyncFrom = {erlimem_async, From},
     case (catch erlimem_cmds:exec(AsyncFrom, NewMsg, Connection)) of
         {'EXIT', E} ->
             ?Error("cmd ~p error~n~p~n", [Cmd, E]),
@@ -255,10 +255,8 @@ handle_cast(Msg, #state{connection=Connection, seco=SeCo} = State) ->
             ?Error("cmd ~p error~n~p~n", [Cmd, E]),
             ?Debug("~p", [ST]),
             do_reply(AsyncFrom, {error, E});
-        Result ->
-            if Result /= ok -> ?Warn("Unexpected result ~p", [Result]);
-               true -> ok
-            end
+        ok -> ok;
+        Result -> ?Warn("Unexpected result ~p", [Result])
     end,
     {noreply, State};
 %%  unhandled
@@ -464,5 +462,5 @@ process_commands([Command|Rest], State) ->
     end,
     process_commands(Rest, NewState).
 
-do_reply({async, Pid}, Message) -> Pid ! Message;
+do_reply({erlimem_async, Pid}, Message) -> Pid ! Message;
 do_reply(From, Message) -> gen_server:reply(From, Message).
