@@ -23,7 +23,7 @@
 }).
 
 % session APIs
--export([close/1, exec/3, exec/4, exec/5, run_cmd/3, get_stmts/1, auth/4]).
+-export([close/1, exec/3, exec/4, exec/5, run_cmd/3, run_cmd_async/3, get_stmts/1, auth/4]).
 
 % gen_server callbacks
 -export([start_link/2, init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -48,7 +48,7 @@ start_link(Connect, Schema) ->
 -spec close({atom(), pid()} | {atom(), pid(), pid()}) -> ok.
 close({?MODULE, Pid}) ->
     case catch is_process_alive(Pid) of
-        true ->	gen_server:call(Pid, stop);
+        true -> gen_server:call(Pid, stop);
         _ -> ok
     end;
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
@@ -64,6 +64,12 @@ exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, B
 
 -spec run_cmd(atom(), list(), {atom(), pid()}) -> term().
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
+
+-spec run_cmd_async(atom(), list(), {atom(), pid()}) -> term().
+run_cmd_async(request_metric, Args, {?MODULE, Pid}) when is_list(Args) ->
+    gen_server:cast(Pid, {{erlimem_async, metric, self()}, [request_metric | Args]});
+run_cmd_async(Cmd, Args, {?MODULE, Pid}) when is_list(Args) ->
+    gen_server:cast(Pid, {{erlimem_async, self()}, [Cmd | Args]}).
 
 -spec auth(AppId :: atom(), SessionId :: any(),
            Credentials :: tuple(), {?MODULE, pid()}) ->
@@ -239,8 +245,22 @@ handle_call(Msg, From, #state{connection=Connection
             {noreply,State#state{event_pids=NewEvtPids}}
     end.
 
-
-%% handle_cast overloads
+handle_cast({From, Msg}, #state{connection=Connection, seco=SeCo} = State) ->
+    [Cmd | Rest] = Msg,
+    NewMsg = list_to_tuple([Cmd, SeCo | Rest]),
+    ?Debug("call ~p", [NewMsg]),
+    case (catch erlimem_cmds:exec(From, NewMsg, Connection)) of
+        {'EXIT', E} ->
+            ?Error("cmd ~p error~n~p~n", [Cmd, E]),
+            do_reply(From, E);
+        {{error, E}, ST} ->
+            ?Error("cmd ~p error~n~p~n", [Cmd, E]),
+            ?Debug("~p", [ST]),
+            do_reply(From, {error, E});
+        ok -> ok;
+        Result -> ?Warn("Unexpected result ~p", [Result])
+    end,
+    {noreply, State};
 %%  unhandled
 handle_cast(Request, State) ->
     ?Error([session, self()], "unknown cast ~p", [Request]),
@@ -424,7 +444,7 @@ process_commands([Command|Rest], State) ->
             State;
         {From, {error, Exception}} ->
             ?Error("to ~p throw~n~p~n", [From, Exception]),
-            gen_server:reply(From,  {error, Exception}),
+            do_reply(From,  {error, Exception}),
             State;
         {From, Term} ->
             case Term of
@@ -438,8 +458,13 @@ process_commands([Command|Rest], State) ->
                     ResultState;
                 _ ->
                     ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    gen_server:reply(From, Term),
+                    do_reply(From, Term),
                     State
             end
     end,
     process_commands(Rest, NewState).
+
+do_reply({erlimem_async, Pid}, Message) -> Pid ! Message;
+do_reply({erlimem_async, metric, Pid}, {metric, _, _} = Message) -> Pid ! Message;
+do_reply({erlimem_async, metric, _Pid}, _Message) -> no_op;
+do_reply(From, Message) -> gen_server:reply(From, Message).
