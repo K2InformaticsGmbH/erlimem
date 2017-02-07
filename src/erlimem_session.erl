@@ -344,23 +344,27 @@ handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(Stmt
             ?Error("statement ~p not found in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
             {noreply, State}
     end;
-handle_info({{P,_} = From,Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
+handle_info({{P,_} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
     case Resp of
-            {error, Exception} ->
-                ?Debug("to ~p throw~n~p~n", [From, Exception]),
-                gen_server:reply(From,  {error, Exception}),
-                {noreply, State};
-            {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
-                ?Debug("RX ~p", [SRslt]),
-                %Rslt = {ok, SRslt, {?MODULE, StmtRef, self()}},
-                Rslt = {ok, SRslt},
-                ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
-                gen_server:reply(From, Rslt),
-                {noreply, State#state{stmts=Stmts}};
-            Term ->
-                ?Debug("Async __RX__ ~p For ~p", [Term, From]),
-                gen_server:reply(From, Term),
-                {noreply, State}
+        {error, Exception} ->
+            ?Debug("to ~p throw~n~p~n", [From, Exception]),
+            gen_server:reply(From,  {error, Exception}),
+            {noreply, State};
+        {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
+            ?Debug("RX ~p", [SRslt]),
+            %Rslt = {ok, SRslt, {?MODULE, StmtRef, self()}},
+            Rslt = {ok, SRslt},
+            ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
+            gen_server:reply(From, Rslt),
+            {noreply, State#state{stmts=Stmts}};
+        {erlimem_async, Term} ->
+            ?Debug("Async __RX__ ~p For ~p", [Term, From]),
+            P ! Term,
+            {noreply, State};
+        Resp ->
+            ?Debug("Sync __RX__ ~p For ~p", [Resp, From]),
+            gen_server:reply(From, Resp),
+            {noreply, State}
     end;
 
 % unhandled
@@ -438,8 +442,8 @@ process_commands([Command|Rest], State) ->
                     ResultState;
                 _ ->
                     ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    gen_server:reply(From, Term),
-                    State
+                    {noreply, ResultState} = handle_info({From, Term}, State),
+                    ResultState
             end
     end,
     process_commands(Rest, NewState).
