@@ -48,7 +48,7 @@ start_link(Connect, Schema) ->
 -spec close({atom(), pid()} | {atom(), pid(), pid()}) -> ok.
 close({?MODULE, Pid}) ->
     case catch is_process_alive(Pid) of
-        true ->	gen_server:call(Pid, stop);
+        true -> gen_server:call(Pid, stop);
         _ -> ok
     end;
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
@@ -66,7 +66,10 @@ exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, B
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
 
 -spec run_cmd_async(atom(), list(), {atom(), pid()}) -> term().
-run_cmd_async(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:cast(Pid, {self(), [Cmd | Args]}).
+run_cmd_async(request_metric, Args, {?MODULE, Pid}) when is_list(Args) ->
+    gen_server:cast(Pid, {{erlimem_async, metric, self()}, [request_metric | Args]});
+run_cmd_async(Cmd, Args, {?MODULE, Pid}) when is_list(Args) ->
+    gen_server:cast(Pid, {{erlimem_async, self()}, [Cmd | Args]}).
 
 -spec auth(AppId :: atom(), SessionId :: any(),
            Credentials :: tuple(), {?MODULE, pid()}) ->
@@ -246,15 +249,14 @@ handle_cast({From, Msg}, #state{connection=Connection, seco=SeCo} = State) ->
     [Cmd | Rest] = Msg,
     NewMsg = list_to_tuple([Cmd, SeCo | Rest]),
     ?Debug("call ~p", [NewMsg]),
-    AsyncFrom = {erlimem_async, From},
-    case (catch erlimem_cmds:exec(AsyncFrom, NewMsg, Connection)) of
+    case (catch erlimem_cmds:exec(From, NewMsg, Connection)) of
         {'EXIT', E} ->
             ?Error("cmd ~p error~n~p~n", [Cmd, E]),
-            do_reply(AsyncFrom, E);
+            do_reply(From, E);
         {{error, E}, ST} ->
             ?Error("cmd ~p error~n~p~n", [Cmd, E]),
             ?Debug("~p", [ST]),
-            do_reply(AsyncFrom, {error, E});
+            do_reply(From, {error, E});
         ok -> ok;
         Result -> ?Warn("Unexpected result ~p", [Result])
     end,
@@ -463,4 +465,6 @@ process_commands([Command|Rest], State) ->
     process_commands(Rest, NewState).
 
 do_reply({erlimem_async, Pid}, Message) -> Pid ! Message;
+do_reply({erlimem_async, metric, Pid}, {metric, _, _} = Message) -> Pid ! Message;
+do_reply({erlimem_async, metric, _Pid}, _Message) -> no_op;
 do_reply(From, Message) -> gen_server:reply(From, Message).
