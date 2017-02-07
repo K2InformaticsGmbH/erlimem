@@ -48,7 +48,7 @@ start_link(Connect, Schema) ->
 -spec close({atom(), pid()} | {atom(), pid(), pid()}) -> ok.
 close({?MODULE, Pid}) ->
     case catch is_process_alive(Pid) of
-        true ->	gen_server:call(Pid, stop);
+        true -> gen_server:call(Pid, stop);
         _ -> ok
     end;
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
@@ -426,7 +426,7 @@ process_commands([Command|Rest], State) ->
             ?Error("to ~p throw~n~p~n", [From, Exception]),
             gen_server:reply(From,  {error, Exception}),
             State;
-        {From, Term} ->
+        {From, {reply, Term}} ->
             case Term of
                 {ok, #stmtResult{}} = Resp ->
                     ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
@@ -440,6 +440,9 @@ process_commands([Command|Rest], State) ->
                     ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
                     gen_server:reply(From, Term),
                     State
-            end
+            end;
+        {{From, _Tag}, Term} ->
+            From ! Term,
+            State
     end,
     process_commands(Rest, NewState).
