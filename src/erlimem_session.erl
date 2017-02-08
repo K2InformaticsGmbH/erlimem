@@ -346,11 +346,11 @@ handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(Stmt
     end;
 handle_info({{P,_} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
     case Resp of
-        {error, Exception} ->
+        {reply, {error, Exception}} ->
             ?Debug("to ~p throw~n~p~n", [From, Exception]),
             gen_server:reply(From,  {error, Exception}),
             {noreply, State};
-        {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
+        {reply, {ok, #stmtResult{stmtRef  = StmtRef} = SRslt}} ->
             ?Debug("RX ~p", [SRslt]),
             %Rslt = {ok, SRslt, {?MODULE, StmtRef, self()}},
             Rslt = {ok, SRslt},
