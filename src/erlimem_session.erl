@@ -357,13 +357,13 @@ handle_info({{P,_} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
             ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
             gen_server:reply(From, Rslt),
             {noreply, State#state{stmts=Stmts}};
-        {erlimem_async, Term} ->
-            ?Debug("Async __RX__ ~p For ~p", [Term, From]),
-            P ! Term,
+        {reply, Term} ->
+            ?Debug("Sync __RX__ ~p For ~p", [Term, From]),
+            gen_server:reply(From, Term),
             {noreply, State};
         Resp ->
-            ?Debug("Sync __RX__ ~p For ~p", [Resp, From]),
-            gen_server:reply(From, Resp),
+            ?Debug("Async __RX__ ~p For ~p", [Resp, From]),
+            P ! Resp,
             {noreply, State}
     end;
 
