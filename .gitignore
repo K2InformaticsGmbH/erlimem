@@ -1,4 +1,1 @@
-_build
 erl_crash.dump
-rebar.lock
-test/*.beam
