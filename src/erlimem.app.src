@@ -3,7 +3,7 @@
 {application, erlimem,
  [
   {description, "IMEM DB client driver"},
-  {vsn, "1.2.7"},
+  {vsn, "1.2.8"},
   {registered, []},
   {applications, [
                   kernel,

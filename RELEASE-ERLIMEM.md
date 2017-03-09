@@ -3,6 +3,11 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
+Version 1.2.8 (Release Date 09.03.2017)
+=======================================
+* Added support for async run_cmd allowing remote imem metric requests
+* Added configuration to run eunit tests
+
 Version 1.2.7 (Release Date 18.01.2017)
 =======================================
 * added 3 tuple for rest service
