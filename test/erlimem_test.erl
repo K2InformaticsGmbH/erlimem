@@ -3,6 +3,7 @@
 -define(LOG(_F),    io:format(user, " [TEST ~3..0B] "++_F++"~n", [?LINE])).
 -define(LOG(_F,_A), io:format(user, " [TEST ~3..0B] "++_F++"~n", [?LINE]++_A)).
 
+-include("../src/erlimem.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -define(Table, test_table_123).
 

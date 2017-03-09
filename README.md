@@ -13,3 +13,9 @@ proplists:get_value(vsn,imem_datatype:module_info(attributes)).
 proplists:get_value(vsn, S:run_cmd(admin_exec, [imem_datatype,module_info,[attributes]])).
 S:run_cmd(admin_exec, [code,get_object_code,[imem_datatype]]).
 ```
+
+EUnit Tests
+=================
+```sh
+rebar -C rebar_test.config get-deps compile eunit
+```
