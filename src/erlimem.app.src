@@ -1,12 +1,12 @@
 {application, erlimem,
     [
+        {description, "IMEM DB client driver"},
+        {vsn, "1.3.0"},
         {applications, [
             kernel,
             ssl,
             stdlib
         ]},
-        {description, "IMEM DB client driver"},
         {env, [{logging, info}]},
-        {mod, {erlimem, []}},
-        {vsn, "1.3.0"}
+        {mod, {erlimem, []}}
     ]}.
