@@ -3,7 +3,7 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
-Version 1.3.0 (Release Date dd.mm.yyyy)
+Version 1.3.0 (Release Date 20.03.2017)
 =======================================
 * Migration to rebar3.
 
