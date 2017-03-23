@@ -344,7 +344,11 @@ handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(Stmt
             ?Error("statement ~p not found in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
             {noreply, State}
     end;
-handle_info({From, {reply, Resp}}, #state{stmts=Stmts}=State) ->
+handle_info({{P,_}, {imem_async, Resp}}, State) when is_pid(P) ->
+    ?Debug("Async __RX__ ~p For ~p", [Resp, P]),
+    P ! Resp,
+    {noreply, State};
+handle_info({From, Resp}, #state{stmts=Stmts}=State) ->
     case Resp of
         {error, Exception} ->
             ?Debug("to ~p throw~n~p~n", [From, Exception]),
@@ -362,10 +366,6 @@ handle_info({From, {reply, Resp}}, #state{stmts=Stmts}=State) ->
             gen_server:reply(From, Resp),
             {noreply, State}
     end;
-handle_info({{P,_}, Resp}, State) when is_pid(P) ->
-    ?Debug("Async __RX__ ~p For ~p", [Resp, P]),
-    P ! Resp,
-    {noreply, State};
 % unhandled
 handle_info(Info, State) ->
     ?Error([session, self()], "unknown info ~p", [Info]),
@@ -430,19 +430,8 @@ process_commands([Command|Rest], State) ->
             gen_server:reply(From,  {error, Exception}),
             State;
         {From, Term} ->
-            case Term of
-                {ok, #stmtResult{}} = Resp ->
-                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    {noreply, ResultState} = handle_info({From,Resp}, State),
-                    ResultState;
-                {StmtRef,{Rows,Completed}} when is_pid(StmtRef) ->
-                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    {noreply, ResultState} = handle_info({From,{StmtRef,{Rows,Completed}}}, State),
-                    ResultState;
-                _ ->
-                    ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-                    {noreply, ResultState} = handle_info({From, Term}, State),
-                    ResultState
-            end
+            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+            {noreply, ResultState} = handle_info({From,Term}, State),
+            ResultState
     end,
     process_commands(Rest, NewState).
