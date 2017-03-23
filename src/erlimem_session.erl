@@ -344,7 +344,7 @@ handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(Stmt
             ?Error("statement ~p not found in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
             {noreply, State}
     end;
-handle_info({{P,_}, {erlimem_async, Resp}}, State) when is_pid(P) ->
+handle_info({{P,_}, {imem_async, Resp}}, State) when is_pid(P) ->
     ?Debug("Async __RX__ ~p For ~p", [Resp, P]),
     P ! Resp,
     {noreply, State};
