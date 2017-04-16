@@ -1,17 +1,12 @@
-%% -*- mode: erlang -*-
-%% ex: ft=erlang
 {application, erlimem,
- [
-  {description, "IMEM DB client driver"},
-  {vsn, "1.2.9"},
-  {registered, []},
-  {applications, [
-                  kernel,
-                  stdlib,
-                  ssl
-                 ]},
-  {mod, { erlimem, []}},
-  {env, [
-         {logging, info}
-        ]}
- ]}.
+    [
+        {description, "IMEM DB client driver"},
+        {vsn, "1.3.0"},
+        {applications, [
+            kernel,
+            ssl,
+            stdlib
+        ]},
+        {env, [{logging, info}]},
+        {mod, {erlimem, []}}
+    ]}.
