@@ -348,7 +348,7 @@ handle_info({{P,_}, {imem_async, Resp}}, State) when is_pid(P) ->
     ?Debug("Async __RX__ ~p For ~p", [Resp, P]),
     P ! Resp,
     {noreply, State};
-handle_info({From, Resp}, #state{stmts=Stmts}=State) ->
+handle_info({{P, _} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
     case Resp of
         {error, Exception} ->
             ?Debug("to ~p throw~n~p~n", [From, Exception]),
