@@ -87,9 +87,21 @@ get_stmts(PidStr)         -> gen_server:call(list_to_pid(PidStr), get_stmts, ?SE
 %
 % gen_server callbacks
 %
-init([Connect, Schema]) ->
+init([Connect, Schema]) when is_binary(Schema); is_atom(Schema) ->
     try
-        State = #state{schema = Schema,
+        SchemaAtom =
+        if is_atom(Schema) -> Schema;
+           true ->
+                case catch binary_to_existing_atom(Schema, utf8) of
+                    {'EXIT', _} -> error("Not a valid schema");
+                    SAtom -> SAtom
+                end
+        end,
+        case imem_meta:schema() of
+            SchemaAtom -> ok;
+            _ -> error("Not a valid schema")
+        end,
+        State = #state{schema = SchemaAtom,
                        unauthIdleTmr = erlang:send_after(?UNAUTHIDLETIMEOUT, self(), unauthorized),
                        connect_conf = Connect},
         case connect(Connect) of
