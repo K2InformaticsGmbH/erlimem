@@ -222,7 +222,7 @@ handle_call({check_schema, Schema, SKey}, _From, #state{schema = StSchema} = Sta
        true -> StSchema
     end,
     if Schema == StSchemaAtom -> {reply, SKey, State#state{schema = Schema}};
-       true -> {stop, {error, <<"Not a valid schema">>}, State}
+       true -> {stop, shutdown, {error, <<"Not a valid schema">>}, State}
     end;
 handle_call(Msg, From, #state{connection=Connection
                              ,schema=Schema
