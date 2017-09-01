@@ -63,6 +63,13 @@ exec(StmtStr, BufferSize, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, Buffer
 exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, BufferSize, Fun], Ctx).
 
 -spec run_cmd(atom(), list(), {atom(), pid()}) -> term().
+run_cmd(login, Args, {?MODULE, Pid}) when is_list(Args) ->
+    case gen_server:call(Pid, [login|Args], ?IMEM_TIMEOUT) of
+        SKey when is_integer(SKey) ->
+            Schema = gen_server:call(Pid, [schema], ?IMEM_TIMEOUT),
+            gen_server:call(Pid, {check_schema, Schema, SKey}, ?IMEM_TIMEOUT);
+        Error -> Error
+    end;
 run_cmd(Cmd, Args, {?MODULE, Pid}) when is_list(Args) -> gen_server:call(Pid, [Cmd|Args], ?IMEM_TIMEOUT).
 
 -spec auth(AppId :: atom(), SessionId :: any(),
@@ -87,7 +94,7 @@ get_stmts(PidStr)         -> gen_server:call(list_to_pid(PidStr), get_stmts, ?SE
 %
 % gen_server callbacks
 %
-init([Connect, Schema]) ->
+init([Connect, Schema]) when is_binary(Schema); is_atom(Schema) ->
     try
         State = #state{schema = Schema,
                        unauthIdleTmr = erlang:send_after(?UNAUTHIDLETIMEOUT, self(), unauthorized),
@@ -204,6 +211,19 @@ handle_call({add_stmt_fsm, StmtRef, {_, StmtFsmPid} = StmtFsm}, _From, #state{st
     erlang:monitor(process, StmtFsmPid),
     NStmts = lists:keystore(StmtRef, 1, Stmts, {StmtRef, #stmt{fsm = StmtFsm}}),
     {reply,ok,State#state{stmts=NStmts}};
+handle_call({check_schema, Schema, SKey}, _From, #state{schema = StSchema} = State) ->
+    StSchemaAtom =
+    if is_binary(StSchema) ->
+            case catch binary_to_existing_atom(StSchema, utf8) of
+                StSchemaA when is_atom(StSchemaA) -> StSchemaA;
+                _ -> {}
+            end;
+       is_atom(StSchema) -> StSchema;
+       true -> StSchema
+    end,
+    if Schema == StSchemaAtom -> {reply, SKey, State#state{schema = Schema}};
+       true -> {stop, shutdown, {error, <<"Not a valid schema">>}, State}
+    end;
 handle_call(Msg, From, #state{connection=Connection
                              ,schema=Schema
                              ,seco=SeCo
