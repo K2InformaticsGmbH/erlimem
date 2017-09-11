@@ -3,6 +3,10 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
+Version 1.3.0 (Release Date 20.03.2017)
+=======================================
+* Migration to rebar3.
+
 Version 1.2.8 (Release Date 09.03.2017)
 =======================================
 * Added support for async run_cmd allowing remote imem metric requests
