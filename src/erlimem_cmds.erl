@@ -95,6 +95,8 @@ recv_sync({Mod, Sock}, Bin, Len) when Mod =:= ssl; Mod =:= gen_tcp ->
         end;
     {error, Reason} ->
         ?Error("~p tcp error ~p", [?MODULE, Reason]),
-        ?Error("~p tcp error stack :~n~p~n", [?MODULE, erlang:get_stacktrace()]),
-        throw({{error, Reason}, erlang:get_stacktrace()})
+        % throw({{error, Reason}, [erlang:get_stacktrace()]})
+        % erlang:stacktrace/0 cannot be called outside catch
+        % so to keep the interface the same returning empty list
+        throw({{error, Reason}, []})
     end.
