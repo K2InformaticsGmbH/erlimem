@@ -86,10 +86,9 @@ logs(_Sess) ->
     ?LOG("------------------------------------------------------------").
 
 all_cons(_) ->
-    ?LOG("--------- authentication success for tcp/rpc/local ----------"),
+    ?LOG("--------- authentication success for tcp/local ----------"),
     Schema = 'Imem',
     Cred = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
-    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, Cred)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, Cred)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, Cred)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, Cred)),
@@ -100,13 +99,11 @@ pswd_process(_) ->
     ?LOG("----------- driver pswd translate (pswd_process) -----------"),
     Schema = 'Imem',
     CredMD50 = {<<"admin">>, erlang:md5(<<"change_on_install">>)},
-    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, CredMD50)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, CredMD50)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, CredMD50)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, CredMD50)),
     ?LOG("connected successfully with md5 cred ~p",[CredMD50]),
     CredMD51 = {<<"admin">>, <<"change_on_install">>},
-    ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(rpc, {node(), Schema}, CredMD51)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(tcp, {localhost, 8124, Schema}, CredMD51)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local_sec, {Schema}, CredMD51)),
     ?assertMatch({ok, {?SESSMOD, _}}, erlimem:open(local, {Schema}, CredMD51)),
@@ -114,11 +111,9 @@ pswd_process(_) ->
     ?LOG("------------------------------------------------------------").
 
 bad_con_reject(_) ->
-    ?LOG("--------- authentication failed for rpc/tcp ----------------"),
+    ?LOG("--------- authentication failed for tcp ----------------"),
     Schema = 'Imem',
     BadCred = {<<"admin">>, erlang:md5(<<"bad password">>)},
-    ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(rpc, {node(), Schema}, BadCred)),
-    timer:sleep(1000),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(tcp, {localhost, 8124, Schema}, BadCred)),
     timer:sleep(1000),
     ?assertMatch({error,{'SecurityException',{_,_}}}, erlimem:open(local_sec, {Schema}, BadCred)),

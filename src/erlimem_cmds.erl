@@ -5,10 +5,6 @@
 -export([exec/3, recv_sync/3]).
 
 -spec exec(undefined | pid(), tuple(), {atom(), term()}) -> ok | {error, atom()}.
-exec(Ref, CmdTuple, {rpc, Node}) when Node == node() ->
-    exec(Ref, CmdTuple, local_sec);
-exec(Ref, CmdTuple, {rpc, Node}) ->
-    exec_catch(Ref, {rpc, Node}, imem_sec, CmdTuple);
 exec(Ref, CmdTuple, local_sec) ->
     exec_catch(Ref, local_sec, imem_sec, CmdTuple);
 exec(Ref, CmdTuple, local) ->
@@ -20,8 +16,7 @@ exec(Ref, CmdTuple, {ssl, Socket}) ->
     exec_catch(Ref, {ssl, Socket}, imem_sec, CmdTuple).
 
 -spec exec_catch(undefined | pid(),
-                 {rpc, atom()}
-                 | {gen_tcp, gen_tcp:socket()}
+                 {gen_tcp, gen_tcp:socket()}
                  | {ssl, ssl:sslsocket()},
                  imem_sec | imem_meta,
                  tuple()) -> ok | {error, atom()}.
@@ -38,9 +33,6 @@ exec_catch(Ref, Media, Mod, CmdTuple) ->
             Media when Media == local; Media == local_sec ->
                 ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
                 ok = apply(imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
-            {rpc, Node} ->
-                ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Node, Mod, Fun, Args}]),
-                ok = rpc:call(Node, imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
             {Transport, Socket} ->
                 ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
                 ReqBin = term_to_binary({Ref,Mod,Fun,Args}),
@@ -53,7 +45,7 @@ exec_catch(Ref, Media, Mod, CmdTuple) ->
     end.
 
 -spec recv_sync({atom(), undefined | gen_tcp:socket() | ssl:socket()}, binary(), integer()) -> term().
-recv_sync({M, _}, _, _) when M =:= rpc; M =:= local; M =:= local_sec ->
+recv_sync({M, _}, _, _) when M =:= local; M =:= local_sec ->
     receive
         {_, {error, Exception}} ->
             ?Error("~p throw exception :~n~p~n", [?MODULE, Exception]),

@@ -59,7 +59,7 @@ init(_) ->
 %% ===================================================================
 %% Public APIs
 %% ===================================================================
--spec open(local | local_sec | {rpc | atom()}
+-spec open(local | local_sec
            | {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}
            | {tcp, inet:ip_address() | inet:hostname(), inet:port_number(),
               Opts::list()}, atom()) ->
