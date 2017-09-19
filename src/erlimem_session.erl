@@ -29,7 +29,7 @@
 -export([start_link/2, init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3, add_stmt_fsm/3]).
 
--spec start_link(local | local_sec | {rpc | atom()}
+-spec start_link(local | local_sec
                  | {tcp, inet:ip_address() | inet:hostname(),
                  inet:port_number()}, atom()) ->
     {ok, pid()} | {error, any()}.
@@ -103,7 +103,6 @@ init([Connect, Schema]) when is_binary(Schema); is_atom(Schema) ->
             ok ->
                 {ok,
                  case Connect of
-                     {rpc, Node} -> State#state{connection = {rpc, Node}};
                      local_sec -> State#state{connection = local_sec};
                      local ->
                          catch erlang:cancel_timer(State#state.unauthIdleTmr),
@@ -136,7 +135,7 @@ init([Connect, Schema]) when is_binary(Schema); is_atom(Schema) ->
             {stop, Reason}
     end.
 
--spec connect(local | local_sec | {rpc | atom()}
+-spec connect(local | local_sec
               | {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}
               | {tcp, inet:ip_address() | inet:hostname(), inet:port_number(),
                  Opts::list()}) ->
@@ -163,12 +162,6 @@ connect({tcp, IpAddr, Port, Opts}) ->
                 {error, Error} -> {error, Error}
             end;
         {error, Error} -> {error, Error}
-    end;
-connect({rpc, Node}) when Node == node()    -> connect(local_sec);
-connect({rpc, Node}) when is_atom(Node)     ->
-    case net_adm:ping(Node) of
-        pong -> ok;
-        pang -> {error, node_unreachable}
     end;
 connect(local_sec)                          -> ok;
 connect(local)                              -> ok.
@@ -338,7 +331,7 @@ handle_info({_,{D,Tab,_,_,_}} = Evt, #state{event_pids=EvtPids}=State) when D =:
     end,
     {noreply, State};
 
-% local / rpc / tcp fallback
+% local / tcp fallback
 handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(StmtRef) ->
     case lists:keyfind(StmtRef, 1, Stmts) of
         {_, #stmt{fsm=StmtFsm}} ->
