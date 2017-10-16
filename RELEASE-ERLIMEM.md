@@ -3,6 +3,11 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
+Version 1.3.1 (Release Date 16.10.2017)
+=======================================
+* Fixed Erlang 20 warnings
+* Removed rpc interfaces
+
 Version 1.3.0 (Release Date 20.03.2017)
 =======================================
 * Migration to rebar3.

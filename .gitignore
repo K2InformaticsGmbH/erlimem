@@ -2,6 +2,8 @@ _build
 .eunit
 .rebar
 *.swp
+.rebar3
+ebin
 erl_crash.dump
 rebar.lock
 rebar3.crashdump
