@@ -9,7 +9,8 @@ all_test_() ->
             {with, [
                 fun connects/1,
                 fun login/1,
-                fun mfa/1
+                fun mfa/1,
+                fun large_echo/1
             ]}
         }
     }.
@@ -85,4 +86,16 @@ mfa(_) ->
     {ok, SessionSsl} = erlimem:open({tcp, "127.0.0.1", 9999, [ssl]}, erlimem),
     ok = SessionSsl:auth(erlimem, SessionId, GoodCred),
     ?assertEqual(true, is_integer(SessionSsl:run_cmd(login,[]))),
-    ?assertEqual(true, is_list(SessionSsl:run_cmd(all_tables,[]))).
+    ?assertEqual(true, is_list(SessionSsl:run_cmd(all_tables,[]))),
+    ?assertEqual(ok, SessionSsl:close()).
+
+large_echo(_) ->
+    SessionId = make_ref(),
+    GoodCred = {pwdmd5, {<<"system">>, erlang:md5(<<"erlimem_test">>)}},
+
+    {ok, SessionSsl} = erlimem:open({tcp, "127.0.0.1", 9999, [ssl]}, erlimem),
+    ok = SessionSsl:auth(erlimem, SessionId, GoodCred),
+    ?assertEqual(true, is_integer(SessionSsl:run_cmd(login,[]))),
+    Bin = list_to_binary(lists:duplicate(1024 * 1024 * 10, 0)), % 10 MB
+    ?assertEqual({server_echo, Bin}, SessionSsl:run_cmd(echo,[Bin])),
+    ?assertEqual(ok, SessionSsl:close()).
