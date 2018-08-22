@@ -13,7 +13,6 @@
     schema,
     seco = '$not_a_session',
     maxrows,
-    inetmod,
     authorized = false,
     unauthIdleTmr = '$not_a_timer'
 }).
@@ -111,13 +110,7 @@ init([Connect, Schema]) when is_binary(Schema); is_atom(Schema) ->
                  end
                 };
             {ok, Transport, Socket} ->
-                {ok, State#state{
-                       connection = {Transport, Socket},
-                       inetmod = case Socket of
-                                     {sslsocket, _, _} -> ssl;
-                                     _ -> inet
-                                 end}
-                };
+                {ok, State#state{connection = {Transport, Socket}}};
             {error, Error} ->
                 ?Error("connect error ~p", [Error]),
                 catch erlang:cancel_timer(State#state.unauthIdleTmr),
@@ -152,7 +145,7 @@ connect({tcp, IpAddr, Port, Opts}) ->
     ?Debug("connecting to ~p:~p ~p", [Ip, Port, Opts]),
     case TcpMod:connect(Ip, Port, [], ?CONNECT_TIMEOUT) of
         {ok, Socket} ->
-            case InetMod:setopts(Socket, [{active, once}, binary, {packet, 0}, {nodelay, true}]) of
+            case InetMod:setopts(Socket, [{active, true}, binary, {packet, 4}, {nodelay, true}]) of
                 ok ->
                     {ok, case lists:member(ssl, Opts) of
                              true -> ssl;
@@ -237,7 +230,7 @@ handle_call(Msg, From, #state{connection=Connection
             list_to_tuple([Cmd,SeCo|Rest])
     end,
     ?Debug("call ~p", [NewMsg]),
-    case (catch erlimem_cmds:exec(From, NewMsg, Connection)) of
+    case (catch exec_cmd(From, NewMsg, Connection)) of
         {'EXIT', E} ->
             ?Error("cmd ~p error~n~p~n", [Cmd, E]),
             {reply, E, State#state{event_pids=NewEvtPids}};
@@ -275,19 +268,30 @@ handle_info(timeout, State) ->
     {stop,normal,State};
 
 % tcp
-handle_info({Tcp, S, <<L:32, PayLoad/binary>> = Pkt}, #state{buf={0, <<>>}, inetmod=InetMod} = State) when Tcp =:= tcp; Tcp =:= ssl ->
-    ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
-    InetMod:setopts(S,[{active,once}]),
-    ?Debug( " term size ~p~n", [L]),
-    {NewLen, NewBin, Commands} = split_packages(L, PayLoad),
-    NewState = process_commands(Commands, State),
-    {noreply, NewState#state{buf={NewLen, NewBin}}};
-handle_info({Tcp,S,Pkt}, #state{buf={Len,Buf}, inetmod=InetMod}=State) when Tcp =:= tcp; Tcp =:= ssl ->
-    ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
-    InetMod:setopts(S,[{active,once}]),
-    {NewLen, NewBin, Commands} = split_packages(Len, <<Buf/binary, Pkt/binary>>),
-    NewState = process_commands(Commands, State),
-    {noreply, NewState#state{buf={NewLen, NewBin}}};
+%handle_info({Tcp, S, <<L:32, PayLoad/binary>> = Pkt}, #state{buf={0, <<>>}, inetmod=InetMod} = State) when Tcp =:= tcp; Tcp =:= ssl ->
+%    ?Debug("RX (~p)~n~p", [byte_size(Pkt),Pkt]),
+%    InetMod:setopts(S,[{active,once}]),
+%    ?Debug( " term size ~p~n", [L]),
+%    {NewLen, NewBin, Commands} = split_packages(L, PayLoad),
+%    NewState = process_commands(Commands, State),
+%    {noreply, NewState#state{buf={NewLen, NewBin}}};
+handle_info({Tcp, _Sock, Command}, State) when Tcp =:= tcp; Tcp =:= ssl ->
+    ?Debug("RX (~p)~n~p", [byte_size(Command), Command]),
+    NewState = case (catch binary_to_term(Command)) of
+        {'EXIT', Reason} ->
+            ?Error("[MALFORMED] RX ~p byte of term, ignoring command : ~p~n~p",
+                   [byte_size(Command), Reason, Command]),
+            State;
+        {From, {error, Exception}} ->
+            ?Error("to ~p throw~n~p~n", [From, Exception]),
+            gen_server:reply(From,  {error, Exception}),
+            State;
+        {From, Term} ->
+            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
+            {noreply, ResultState} = handle_info({From,Term}, State),
+            ResultState
+    end,
+    {noreply, NewState};
 handle_info({Closed,Socket}, State) when Closed =:= tcp_closed; Closed =:= ssl_closed ->
     ?Info("~p ~p ~p", [self(), Closed, Socket]),
     {stop,normal,State};
@@ -388,7 +392,7 @@ terminate(Reason, #state{connection = Connect} = State) ->
     try
         _ = [StmtFsm:stop() || #stmt{fsm=StmtFsm} <- State#state.stmts],
         if State#state.authorized ->
-               erlimem_cmds:exec(undefined, {logout, State#state.seco}, Connect);
+               exec_cmd(undefined, {logout, State#state.seco}, Connect);
            true -> ok
         end,
         case Connect of
@@ -409,42 +413,41 @@ code_change(_OldVsn, State, _Extra) ->
 % private functions
 %
 
-% tcp helpers
--spec split_packages(integer(), binary()) -> {integer(), binary(), [binary()]}.
-split_packages(0, <<>>) -> {0, <<>>, []};
-split_packages(Len, Payload) when Len > byte_size(Payload) ->
-    ?Debug(" [INCOMPLETE] ~p received ~p of ~p bytes buffering...", [self(), byte_size(Payload), Len]),
-    {Len, Payload, []};
-split_packages(Len, Payload) when Len =:= byte_size(Payload) ->
-    {0, <<>>, [Payload]};
-split_packages(Len, Payload) ->
-    <<Command:Len/binary, Rest/binary>> = Payload,
-    if
-        byte_size(Rest) < 4 ->
-            ?Debug(" [INCOMPLETE] ~p received header ~p of 4 bytes buffering...", [self(), byte_size(Rest)]),
-            {0, Rest, [Command]};
-        true ->
-            <<NewLen:32, NewPayload/binary>> = Rest,
-            {ResultLen, ResultPayload, Commands} = split_packages(NewLen, NewPayload),
-            {ResultLen, ResultPayload, [Command|Commands]}
-    end.
+-spec exec_cmd(undefined | pid(), tuple(), {atom(), term()}) -> ok | {error, atom()}.
+exec_cmd(Ref, CmdTuple, local_sec) ->
+    safe_exec_cmd(Ref, local_sec, imem_sec, CmdTuple);
+exec_cmd(Ref, CmdTuple, local) ->
+    {[Cmd|_], Args} = lists:split(1, tuple_to_list(CmdTuple)),
+    safe_exec_cmd(Ref, local, imem_meta, list_to_tuple([Cmd|lists:nthtail(1, Args)]));
+exec_cmd(Ref, CmdTuple, {gen_tcp, Socket}) ->
+    safe_exec_cmd(Ref, {gen_tcp, Socket}, imem_sec, CmdTuple);
+exec_cmd(Ref, CmdTuple, {ssl, Socket}) ->
+    safe_exec_cmd(Ref, {ssl, Socket}, imem_sec, CmdTuple).
 
--spec process_commands([binary()], #state{}) -> #state{}.
-process_commands([], State) -> State;
-process_commands([<<>>|Rest], State) -> process_commands(Rest, State);
-process_commands([Command|Rest], State) ->
-    ?Debug("RX ~p = bytes of term", [byte_size(Command)]),
-    NewState = case (catch binary_to_term(Command)) of
-        {'EXIT', _Reason} ->
-            ?Error(" [MALFORMED] RX ~p byte of term, ignoring command ~p ...", [byte_size(Command)]),
-            State;
-        {From, {error, Exception}} ->
-            ?Error("to ~p throw~n~p~n", [From, Exception]),
-            gen_server:reply(From,  {error, Exception}),
-            State;
-        {From, Term} ->
-            ?Debug("TCP async __RX__ ~p For ~p", [Term, From]),
-            {noreply, ResultState} = handle_info({From,Term}, State),
-            ResultState
+-spec safe_exec_cmd(undefined | pid(),
+                 {gen_tcp, gen_tcp:socket()}
+                 | {ssl, ssl:sslsocket()},
+                 imem_sec | imem_meta,
+                 tuple()) -> ok | {error, atom()}.
+safe_exec_cmd(Ref, Media, Mod, CmdTuple) ->
+    {Cmd, Args0} = lists:split(1, tuple_to_list(CmdTuple)),
+    Fun = lists:nth(1, Cmd),
+
+    Args = case Fun of
+        fetch_recs_async -> Args0 ++ [self()];
+        _                -> Args0
     end,
-    process_commands(Rest, NewState).
+    try
+        case Media of
+            Media when Media == local; Media == local_sec ->
+                ?Debug([session, self()], "~p MFA ~p", [?MODULE, {Mod, Fun, Args}]),
+                ok = apply(imem_server, mfa, [{Ref, Mod, Fun, Args}, {self(), Ref}]);
+            {Transport, Socket} ->
+                ?Debug([session, self()], "TCP ___TX___ ~p", [{Mod, Fun, Args}]),
+                ReqBin = term_to_binary({Ref,Mod,Fun,Args}),
+                Transport:send(Socket, ReqBin)
+        end
+    catch
+        _Class:Result ->
+            throw({{error, Result}, erlang:get_stacktrace()})
+    end.

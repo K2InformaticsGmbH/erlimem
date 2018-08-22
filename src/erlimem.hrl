@@ -1,8 +1,9 @@
+-ifndef(_ERLIMEM_HRL_).
+
 -define(IMEM_TIMEOUT,           infinity).
 -define(UNAUTHIDLETIMEOUT,      100000).
 -define(SESSION_TIMEOUT,        3600000).
 -define(CONNECT_TIMEOUT,        5000).
--define(MAX_PREFETCH_ON_FLIGHT, 5).
 
 -define(LOG_TAG, "_IMDR_").
 
@@ -38,4 +39,4 @@
 -define(Emergency(__F,__A),     lager:emergency(     "["++?LOG_TAG++"] ~p "++__F, [{?MODULE,?LINE}]++__A)).
 -define(Emergency(__F),         lager:emergency(     "["++?LOG_TAG++"] ~p "++__F, [{?MODULE,?LINE}])).
 
--define(NoRefSqlRegEx, "^(?i)(CREATE|INSERT|UPDATE|DELETE|DROP)").
+-endif.
