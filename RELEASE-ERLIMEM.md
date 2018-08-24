@@ -3,6 +3,12 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
+Version 2.0.0 (Release Date 24.08.2018)
+=======================================
+* [4-byte TCP payload header is replaced with socket `{packet, 4}` option](https://github.com/K2InformaticsGmbH/erlimem/pull/27)
+* test cases cleaup and update
+* unused macros and modules removed, code cleanups
+
 Version 1.3.1 (Release Date 16.10.2017)
 =======================================
 * Fixed Erlang 20 warnings
