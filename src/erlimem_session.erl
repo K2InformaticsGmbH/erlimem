@@ -52,13 +52,13 @@ close({?MODULE, Pid}) ->
     end;
 close({?MODULE, StmtRef, Pid}) -> gen_server:call(Pid, {close_statement, StmtRef}).
 
--spec exec(list(), list(), {atom(), pid()}) -> term().
-exec(StmtStr, Params, Ctx) -> exec(StmtStr, 0, Ctx, Params).
+-spec exec(list(), list(), {erlimem_session, pid()}) -> term().
+exec(StmtStr, Params, Ctx) -> exec(StmtStr, 0, Params, Ctx).
 
--spec exec(list(), integer(), list(), {atom(), pid()}) -> term().
+-spec exec(list(), integer(), list(), {erlimem_session, pid()}) -> term().
 exec(StmtStr, BufferSize, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, BufferSize], Ctx).
 
--spec exec(list(), integer(), fun(), {atom(), pid()}, list()) -> term().
+-spec exec(list(), integer(), fun(), list(), {erlimem_session, pid()}) -> term().
 exec(StmtStr, BufferSize, Fun, Params, Ctx) -> run_cmd(exec, [Params, StmtStr, BufferSize, Fun], Ctx).
 
 -spec run_cmd(atom(), list(), {atom(), pid()}) -> term().
@@ -413,7 +413,7 @@ code_change(_OldVsn, State, _Extra) ->
 % private functions
 %
 
--spec exec_cmd(undefined | pid(), tuple(), {atom(), term()}) -> ok | {error, atom()}.
+-spec exec_cmd(undefined | pid(), tuple(), atom() | {atom(), term()}) -> ok | {error, atom()}.
 exec_cmd(Ref, CmdTuple, local_sec) ->
     safe_exec_cmd(Ref, local_sec, imem_sec, CmdTuple);
 exec_cmd(Ref, CmdTuple, local) ->
@@ -424,7 +424,7 @@ exec_cmd(Ref, CmdTuple, {gen_tcp, Socket}) ->
 exec_cmd(Ref, CmdTuple, {ssl, Socket}) ->
     safe_exec_cmd(Ref, {ssl, Socket}, imem_sec, CmdTuple).
 
--spec safe_exec_cmd(undefined | pid(),
+-spec safe_exec_cmd(undefined | pid(), local | local_sec |
                  {gen_tcp, gen_tcp:socket()}
                  | {ssl, ssl:sslsocket()},
                  imem_sec | imem_meta,
