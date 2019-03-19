@@ -83,7 +83,9 @@ auth(AppId, SessionId, Credentials, {?MODULE, Pid}) when is_atom(AppId) ->
             {ok, Steps}
     end.
 
--spec add_stmt_fsm(pid(), {atom(), pid()}, {atom(), pid()}) -> ok.
+-spec add_stmt_fsm(pid()|list(pid()), {atom(), pid()}, {atom(), pid()}) -> ok.
+add_stmt_fsm(StmtRefs, StmtFsm, {?MODULE, Pid}) when is_list(StmtRefs) -> 
+    [add_stmt_fsm(SR, StmtFsm, {?MODULE, Pid}) || SR <- StmtRefs];
 add_stmt_fsm(StmtRef, StmtFsm, {?MODULE, Pid}) -> gen_server:call(Pid, {add_stmt_fsm, StmtRef, StmtFsm}, ?SESSION_TIMEOUT).
 
 -spec get_stmts(list() | {atom(), pid()}) -> [pid()].
@@ -371,11 +373,11 @@ handle_info({{P, _} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
             ?Debug("to ~p throw~n~p~n", [From, Exception]),
             gen_server:reply(From,  {error, Exception}),
             {noreply, State};
-        {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
+        {ok, #stmtResults{stmtRefs=StmtRefs} = SRslt} ->
             ?Debug("RX ~p", [SRslt]),
             %Rslt = {ok, SRslt, {?MODULE, StmtRef, self()}},
             Rslt = {ok, SRslt},
-            ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
+            ?Debug("statement ~p stored in ~p", [StmtRefs, [S|| {S,_} <- Stmts]]),
             gen_server:reply(From, Rslt),
             {noreply, State#state{stmts=Stmts}};
         Resp ->
