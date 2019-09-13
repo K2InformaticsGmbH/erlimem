@@ -83,8 +83,11 @@ auth(AppId, SessionId, Credentials, {?MODULE, Pid}) when is_atom(AppId) ->
             {ok, Steps}
     end.
 
--spec add_stmt_fsm(pid(), {atom(), pid()}, {atom(), pid()}) -> ok.
-add_stmt_fsm(StmtRef, StmtFsm, {?MODULE, Pid}) -> gen_server:call(Pid, {add_stmt_fsm, StmtRef, StmtFsm}, ?SESSION_TIMEOUT).
+-spec add_stmt_fsm(pid()|list(pid()), {atom(), pid()}, {atom(), pid()}) -> ok.
+add_stmt_fsm(StmtRefs, StmtFsm, {?MODULE, Pid}) when is_list(StmtRefs) -> 
+    [add_stmt_fsm(SR, StmtFsm, {?MODULE, Pid}) || SR <- StmtRefs];
+add_stmt_fsm(StmtRef, StmtFsm, {?MODULE, Pid}) -> 
+    gen_server:call(Pid, {add_stmt_fsm, StmtRef, StmtFsm}, ?SESSION_TIMEOUT).
 
 -spec get_stmts(list() | {atom(), pid()}) -> [pid()].
 get_stmts({?MODULE, Pid}) -> gen_server:call(Pid, get_stmts, ?SESSION_TIMEOUT);
@@ -214,6 +217,7 @@ handle_call(Msg, From, #state{connection=Connection
                              ,schema=Schema
                              ,seco=SeCo
                              ,event_pids=EvtPids} = State) ->
+    % blocking command entry, responded later in handle_info
     [Cmd|Rest] = Msg,
     NewMsg = case Cmd of
         exec ->
@@ -341,19 +345,19 @@ handle_info({_Ref,{StmtRef,Result}}, #state{stmts=Stmts}=State) when is_pid(Stmt
         {_, #stmt{fsm=StmtFsm}} ->
             case Result of
                 {error, Resp} = Error ->
-                    StmtFsm:rows(Error),
+                    StmtFsm:rows({StmtRef,Error}),
                     ?Error([session, self()], "async_resp~n~p~n", [Resp]),
                     {noreply, State};
                 {delete, {Rows, Completed}} when is_list(Rows) ->
-                    StmtFsm:delete({Rows, Completed}),
+                    StmtFsm:delete({StmtRef,{Rows, Completed}}),
                     ?Debug("~p __RX__ deleted rows ~p status ~p", [StmtRef, length(Rows), Completed]),
                     {noreply, State};
                 {Rows, Completed} when is_list(Rows) ->
-                    StmtFsm:rows({Rows,Completed}),
+                    StmtFsm:rows({StmtRef,{Rows,Completed}}),
                     ?Debug("~p __RX__ received rows ~p status ~p", [StmtRef, length(Rows), Completed]),
                     {noreply, State};
                 Unknown ->
-                    StmtFsm:rows(Unknown),
+                    StmtFsm:rows({StmtRef,Unknown}),
                     ?Error([session, self()], "async_resp unknown resp~n~p~n", [Unknown]),
                     {noreply, State}
             end;
@@ -366,16 +370,17 @@ handle_info({{P,_}, {imem_async, Resp}}, State) when is_pid(P) ->
     P ! Resp,
     {noreply, State};
 handle_info({{P, _} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
+    % blocking command response after async reply from command stub comes in
     case Resp of
         {error, Exception} ->
             ?Debug("to ~p throw~n~p~n", [From, Exception]),
             gen_server:reply(From,  {error, Exception}),
             {noreply, State};
-        {ok, #stmtResult{stmtRef  = StmtRef} = SRslt} ->
+        {ok, #stmtResults{stmtRefs=StmtRefs} = SRslt} ->
             ?Debug("RX ~p", [SRslt]),
             %Rslt = {ok, SRslt, {?MODULE, StmtRef, self()}},
             Rslt = {ok, SRslt},
-            ?Debug("statement ~p stored in ~p", [StmtRef, [S|| {S,_} <- Stmts]]),
+            ?Debug("statement ~p stored in ~p", [StmtRefs, [S|| {S,_} <- Stmts]]),
             gen_server:reply(From, Rslt),
             {noreply, State#state{stmts=Stmts}};
         Resp ->
@@ -383,7 +388,6 @@ handle_info({{P, _} = From, Resp}, #state{stmts=Stmts}=State) when is_pid(P) ->
             gen_server:reply(From, Resp),
             {noreply, State}
     end;
-% unhandled
 handle_info(Info, State) ->
     ?Error([session, self()], "unknown info ~p", [Info]),
     {noreply, State}.
