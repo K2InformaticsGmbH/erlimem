@@ -3,6 +3,11 @@ Application erlimem
 
 Release history with new or improved features and bugfixes
 
+Version 3.0.0 (Release Date 13.09.2019)
+=======================================
+* Support for cluster queires
+* Backward incompatible
+
 Version 2.0.0 (Release Date 24.08.2018)
 =======================================
 * [4-byte TCP payload header is replaced with socket `{packet, 4}` option](https://github.com/K2InformaticsGmbH/erlimem/pull/27)
